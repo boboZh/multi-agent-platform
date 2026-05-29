@@ -1,0 +1,22 @@
+{
+  "agentsPanel": {
+    "title": "AI 智能体",
+    "subtitle": "在画布编排之前，创建并配置您的自主演进 AI 智能体。",
+    "createButton": "创建智能体"
+  },
+  "login": {
+    "title": "登录",
+    "subtitle": "登录体验更多功能",
+    "loginButton": "登录",
+    "registerButton": "注册"
+  },
+  "layout": {
+    "title": "Miranda多智能体系统",
+    "dashboard": "首页",
+    "agents": "智能体",
+    "workflows": "工作流",
+    "logs": "日志",
+    "usage": "用量",
+    "knowledgeBase": "知识库"
+  }
+}

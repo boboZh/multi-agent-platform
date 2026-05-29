@@ -8,35 +8,41 @@ import {
   Coins,
   Database,
 } from "lucide-react";
+import { getTranslations } from "next-intl/server";
 
-export default function DashboardLayout({
+export default async function DashboardLayout({
   children,
+  params,
 }: {
   children: React.ReactNode;
+  params: Promise<{ locale: string }>;
 }) {
+  const { locale } = await params;
+  const t = await getTranslations("layout");
+
   const menuItems = [
     {
-      name: "Dashboard",
+      name: t("dashboard"),
       href: "/",
       icon: <LayoutDashboard size={18} />,
     },
     {
-      name: "Agents",
+      name: t("agents"),
       href: "/agents",
       icon: <Bot size={18} />,
     },
     {
-      name: "Workflows",
+      name: t("workflows"),
       href: "/workflows",
       icon: <GitBranch size={18} />,
     },
     {
-      name: "Execution Logs",
+      name: t("logs"),
       href: "/logs",
       icon: <Terminal size={18} />,
     },
     {
-      name: "Token Usage",
+      name: t("usage"),
       href: "/usage",
       icon: <Coins size={18} />,
     },
@@ -49,9 +55,9 @@ export default function DashboardLayout({
           {/* Platform Branding Logo Header */}
           <div className="px-2 py-1.5 flex items-center gap-2 font-bold text-lg tracking-tight border-b border-zinc-100 pb-4">
             <span className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs">
-              Ω
+              MMA
             </span>
-            AgentEngine Studio
+            {t("title")}
           </div>
 
           {/* Navigation Link Menu List */}
@@ -76,7 +82,7 @@ export default function DashboardLayout({
           </div>
           <div className="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-zinc-400">
             <Database size={18} />
-            Knowledge Base
+            {t("knowledgeBase")}
           </div>
         </div>
       </aside>

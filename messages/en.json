@@ -1,0 +1,22 @@
+{
+  "AgentsPanel": {
+    "title": "AI Agent",
+    "subtitle": "Create and configure your autonomous AI agents before canvas orchestration.",
+    "createButton": "Create Agent"
+  },
+  "Login": {
+    "title": "Login",
+    "subtitle": "Login to experience more features",
+    "loginButton": "sign in",
+    "registerButton": "sign up"
+  },
+  "layout": {
+    "title": "Miranda Multi-Agent",
+    "dashboard": "Dashboard",
+    "agents": "Agents",
+    "workflows": "Workflows",
+    "logs": "Logs",
+    "usage": "Usage",
+    "knowledgeBase": "Knowledge Base"
+  }
+}
