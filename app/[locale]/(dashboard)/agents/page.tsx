@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Bot,
   Grid2X2,
@@ -13,11 +13,30 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
@@ -38,7 +57,7 @@ type AgentRow = {
 type ToolRow = {
   id: UUID;
   user_id: UUID;
-  name: string; // machine-safe: tool_<hex>
+  name: string;
   display_name: string | null;
   description: string | null;
   tool_type: "explicit" | "implicit" | string;
@@ -55,11 +74,13 @@ type AgentWithTools = AgentRow & {
   explicitTools: ToolRow[];
 };
 
-const MODEL_OPTIONS = [
-  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-  { value: "gpt-4o", label: "GPT-4o" },
-  { value: "claude-3-5-sonnet", label: "Claude 3.5 Sonnet" },
+const MODEL_VALUES = [
+  "gemini-2-5-flash",
+  "gpt-4o",
+  "claude-3-5-sonnet",
 ] as const;
+
+type ModelValue = (typeof MODEL_VALUES)[number];
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
@@ -73,32 +94,30 @@ function formatTemp(v: number) {
 function getErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return "Unknown error";
-  }
+  return null;
 }
 
-function modelLabel(modelName: string | null) {
-  const found = MODEL_OPTIONS.find((m) => m.value === modelName);
-  return found?.label ?? (modelName || "Unknown model");
+function isModelValue(value: string | null): value is ModelValue {
+  return MODEL_VALUES.includes(value as ModelValue);
 }
 
 function toolLabel(tool: ToolRow) {
-  // display_name is human-friendly; name is the abstract identifier
   return tool.display_name?.trim() || tool.name;
 }
 
-function promptSnippet(prompt: string | null, maxLen = 140) {
+function promptSnippet(
+  prompt: string | null,
+  emptyLabel: string,
+  maxLen = 140,
+) {
   const p = (prompt || "").trim().replaceAll(/\s+/g, " ");
-  if (!p) return "No system prompt yet.";
+  if (!p) return emptyLabel;
   return p.length <= maxLen ? p : `${p.slice(0, maxLen - 1)}…`;
 }
 
 function SkeletonCard() {
   return (
-    <div className="rounded-xl border p-5 animate-pulse">
+    <div className="animate-pulse rounded-xl border border-primary/10 p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-2">
           <div className="h-4 w-40 rounded bg-muted" />
@@ -121,6 +140,8 @@ function SkeletonCard() {
 }
 
 export default function AgentsPage() {
+  const t = useTranslations("agentsPanel");
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,20 +152,28 @@ export default function AgentsPage() {
   const [query, setQuery] = useState("");
   const [gridCompact, setGridCompact] = useState(false);
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<UUID | null>(null);
 
-  // form state
   const [name, setName] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [modelName, setModelName] = useState<(typeof MODEL_OPTIONS)[number]["value"]>(
-    MODEL_OPTIONS[0].value,
-  );
+  const [modelName, setModelName] = useState<ModelValue>(MODEL_VALUES[0]);
   const [temperature, setTemperature] = useState(0.7);
   const [selectedToolIds, setSelectedToolIds] = useState<Set<UUID>>(new Set());
 
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<UUID | null>(null);
+
+  const modelLabel = useCallback(
+    (model: string | null) => {
+      if (isModelValue(model)) {
+        console.log("model: ", model);
+        return t(`models.${model}`);
+      }
+      return t("models.unknown");
+    },
+    [t],
+  );
 
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -156,14 +185,14 @@ export default function AgentsPage() {
     setEditingAgentId(null);
     setName("");
     setSystemPrompt("");
-    setModelName(MODEL_OPTIONS[0].value);
+    setModelName(MODEL_VALUES[0]);
     setTemperature(0.7);
     setSelectedToolIds(new Set());
   }
 
   function openCreate() {
     resetForm();
-    setDrawerOpen(true);
+    setDialogOpen(true);
   }
 
   function openEdit(agent: AgentWithTools) {
@@ -171,12 +200,16 @@ export default function AgentsPage() {
     setName(agent.name || "");
     setSystemPrompt(agent.system_prompt || "");
     setModelName(
-      (MODEL_OPTIONS.find((m) => m.value === agent.model_name)?.value ??
-        MODEL_OPTIONS[0].value) as (typeof MODEL_OPTIONS)[number]["value"],
+      isModelValue(agent.model_name) ? agent.model_name : MODEL_VALUES[0],
     );
     setTemperature(clamp(agent.temperature ?? 0.7, 0, 1));
-    setSelectedToolIds(new Set(agent.explicitTools.map((t) => t.id)));
-    setDrawerOpen(true);
+    setSelectedToolIds(new Set(agent.explicitTools.map((tool) => tool.id)));
+    setDialogOpen(true);
+  }
+
+  function closeDialog() {
+    setDialogOpen(false);
+    resetForm();
   }
 
   async function loadAll({ silent = false }: { silent?: boolean } = {}) {
@@ -189,14 +222,16 @@ export default function AgentsPage() {
       if (!user) {
         setAgents([]);
         setExplicitTools([]);
-        setError("You’re not signed in. Please log in to manage agents.");
+        setError(t("errors.notSignedIn"));
         return;
       }
 
       const [agentsRes, toolsRes] = await Promise.all([
         supabase
           .from("agents")
-          .select("id,user_id,name,system_prompt,model_name,temperature,created_at")
+          .select(
+            "id,user_id,name,system_prompt,model_name,temperature,created_at",
+          )
           .eq("user_id", user.id)
           .order("created_at", { ascending: false }),
         supabase
@@ -229,32 +264,33 @@ export default function AgentsPage() {
       if (agentToolsErr) throw agentToolsErr;
 
       const agentToolRows = (agentToolsData || []) as AgentToolRow[];
-      const toolById = new Map(toolRows.map((t) => [t.id, t] as const));
+      const toolById = new Map(
+        toolRows.map((tool) => [tool.id, tool] as const),
+      );
 
       const toolsByAgent = new Map<UUID, ToolRow[]>();
-      for (const at of agentToolRows) {
-        const t = toolById.get(at.tool_id);
-        if (!t) continue; // only show explicit tools (checkbox set) here
-        const arr = toolsByAgent.get(at.agent_id) ?? [];
-        arr.push(t);
-        toolsByAgent.set(at.agent_id, arr);
+      for (const link of agentToolRows) {
+        const tool = toolById.get(link.tool_id);
+        if (!tool) continue;
+        const list = toolsByAgent.get(link.agent_id) ?? [];
+        list.push(tool);
+        toolsByAgent.set(link.agent_id, list);
       }
 
-      const hydrated: AgentWithTools[] = agentRows.map((a) => ({
-        ...a,
-        explicitTools: toolsByAgent.get(a.id) ?? [],
+      const hydrated: AgentWithTools[] = agentRows.map((agent) => ({
+        ...agent,
+        explicitTools: toolsByAgent.get(agent.id) ?? [],
       }));
 
       setAgents(hydrated);
     } catch (e: unknown) {
-      setError(getErrorMessage(e) || "Failed to load agents.");
+      setError(getErrorMessage(e) ?? t("errors.loadFailed"));
     } finally {
       if (!silent) setLoading(false);
     }
   }
 
   useEffect(() => {
-    // Defer the async call to avoid strict "setState in effect" linting.
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -263,6 +299,7 @@ export default function AgentsPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial fetch only
   }, []);
 
   async function handleRefresh() {
@@ -278,7 +315,7 @@ export default function AgentsPage() {
     if (saving) return;
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError("Agent name is required.");
+      setError(t("errors.nameRequired"));
       return;
     }
 
@@ -288,7 +325,10 @@ export default function AgentsPage() {
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
       const user = userRes.user;
-      if (!user) throw new Error("Not signed in.");
+      if (!user) {
+        setError(t("errors.notSignedInSave"));
+        return;
+      }
 
       const payload = {
         name: trimmedName,
@@ -308,24 +348,19 @@ export default function AgentsPage() {
       } else {
         const { data: insData, error: insErr } = await supabase
           .from("agents")
-          .insert({
-            user_id: user.id,
-            ...payload,
-          })
+          .insert({ user_id: user.id, ...payload })
           .select("id")
           .single();
         if (insErr) throw insErr;
         agentId = (insData as { id: UUID } | null)?.id ?? null;
       }
 
-      if (!agentId) throw new Error("Failed to resolve agent id.");
+      if (!agentId) {
+        setError(t("errors.resolveAgentId"));
+        return;
+      }
 
-      // Rebind explicit tools in one sweep:
-      // - delete existing explicit tool bindings
-      // - insert selected ones
       const selected = Array.from(selectedToolIds);
-
-      // Delete all bindings for this agent (safe + simple; implicit tools are not stored here)
       const { error: delErr } = await supabase
         .from("agent_tools")
         .delete()
@@ -333,18 +368,20 @@ export default function AgentsPage() {
       if (delErr) throw delErr;
 
       if (selected.length > 0) {
-        const rows = selected.map((tool_id) => ({ agent_id: agentId, tool_id }));
+        const rows = selected.map((tool_id) => ({
+          agent_id: agentId,
+          tool_id,
+        }));
         const { error: bindErr } = await supabase
           .from("agent_tools")
           .insert(rows);
         if (bindErr) throw bindErr;
       }
 
-      setDrawerOpen(false);
-      resetForm();
+      closeDialog();
       await loadAll({ silent: true });
     } catch (e: unknown) {
-      setError(getErrorMessage(e) || "Failed to save agent.");
+      setError(getErrorMessage(e) ?? t("errors.saveFailed"));
     } finally {
       setSaving(false);
     }
@@ -358,7 +395,10 @@ export default function AgentsPage() {
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
       const user = userRes.user;
-      if (!user) throw new Error("Not signed in.");
+      if (!user) {
+        setError(t("errors.notSignedInSave"));
+        return;
+      }
 
       const { error: delBindingsErr } = await supabase
         .from("agent_tools")
@@ -375,7 +415,7 @@ export default function AgentsPage() {
 
       await loadAll({ silent: true });
     } catch (e: unknown) {
-      setError(getErrorMessage(e) || "Failed to delete agent.");
+      setError(getErrorMessage(e) ?? t("errors.deleteFailed"));
     } finally {
       setDeletingId(null);
     }
@@ -391,97 +431,95 @@ export default function AgentsPage() {
   }
 
   const gridCols = gridCompact
-    ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-    : "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6";
-
-  const closeDialog = () => {
-    setDrawerOpen(false);
-    resetForm();
-  };
+    ? "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+    : "grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3";
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-900 text-white">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm shadow-primary/25">
               <Bot className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-                AI Agent Directory
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+                {t("title")}
               </h1>
-              <p className="text-sm text-muted-foreground">
-                Browse, search, and configure agents before adding them to a
-                workflow canvas.
-              </p>
+              <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleRefresh} disabled={refreshing} size="lg">
+          <Button
+            variant="outline"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            size="lg"
+          >
             {refreshing ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Refreshing
+                {t("refreshing")}
               </>
             ) : (
               <>
                 <SlidersHorizontal className="h-4 w-4" />
-                Refresh
+                {t("refresh")}
               </>
             )}
           </Button>
           <Button onClick={openCreate} size="lg">
             <Plus className="h-4 w-4" />
-            Create Agent
+            {t("createButton")}
           </Button>
         </div>
       </div>
 
-      {/* Search + view toggle */}
-      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-xl border border-primary/15 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative w-full sm:max-w-md">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-primary/70" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search agents by name…"
-            className="pl-9 h-9"
+            placeholder={t("searchPlaceholder")}
+            className="h-9 border-primary/20 pl-9 focus-visible:border-primary focus-visible:ring-primary/30"
           />
         </div>
         <div className="flex items-center gap-2">
-          <span className="hidden sm:inline-flex text-xs rounded-full border px-2 py-1">
-            {filteredAgents.length} / {agents.length}
+          <span className="hidden rounded-full border border-primary/20 bg-primary/5 px-2 py-1 text-xs font-medium text-primary sm:inline-flex">
+            {t("count", {
+              filtered: filteredAgents.length,
+              total: agents.length,
+            })}
           </span>
           <Button
-            variant={gridCompact ? "outline" : "secondary"}
+            variant={gridCompact ? "outline" : "default"}
             size="icon-sm"
             onClick={() => setGridCompact(false)}
             disabled={!gridCompact}
+            aria-label={t("a11y.gridView")}
           >
             <Grid2X2 className="h-4 w-4" />
           </Button>
           <Button
-            variant={gridCompact ? "secondary" : "outline"}
+            variant={gridCompact ? "default" : "outline"}
             size="icon-sm"
             onClick={() => setGridCompact(true)}
             disabled={gridCompact}
+            aria-label={t("a11y.compactView")}
           >
             <LayoutList className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      {/* Error banner */}
       {error ? (
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
         </div>
       ) : null}
 
-      {/* Content */}
       {loading ? (
         <div className={gridCols}>
           {Array.from({ length: 6 }).map((_, i) => (
@@ -489,92 +527,112 @@ export default function AgentsPage() {
           ))}
         </div>
       ) : agents.length === 0 ? (
-        <div className="rounded-2xl border border-dashed bg-card p-10 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
-            <Bot className="h-6 w-6 text-muted-foreground" />
+        <div className="rounded-2xl border border-dashed border-primary/25 bg-card p-10 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+            <Bot className="h-6 w-6 text-primary" />
           </div>
-          <div className="mt-4 text-lg font-semibold text-zinc-900">
-            No agents yet
+          <div className="mt-4 text-lg font-semibold text-foreground">
+            {t("empty.title")}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Create your first agent, set its system prompt, pick a model, and
-            grant explicit tool integrations.
+            {t("empty.description")}
           </div>
           <div className="mt-5 flex justify-center">
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              Create Agent
+              {t("empty.action")}
             </Button>
           </div>
         </div>
       ) : filteredAgents.length === 0 ? (
-        <div className="rounded-2xl border bg-card p-10 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
-            <Search className="h-6 w-6 text-muted-foreground" />
+        <div className="rounded-2xl border border-primary/15 bg-card p-10 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+            <Search className="h-6 w-6 text-primary" />
           </div>
-          <div className="mt-4 text-lg font-semibold text-zinc-900">
-            No matching agents
+          <div className="mt-4 text-lg font-semibold text-foreground">
+            {t("noMatch.title")}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Try a different search term.
+            {t("noMatch.description")}
           </div>
           <div className="mt-5 flex justify-center">
             <Button variant="outline" onClick={() => setQuery("")}>
-              Clear search
+              {t("noMatch.clearSearch")}
             </Button>
           </div>
         </div>
       ) : (
         <div className={gridCols}>
           {filteredAgents.map((agent) => (
-            <Card key={agent.id} className="group">
+            <Card
+              key={agent.id}
+              className="group transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/20"
+            >
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <CardTitle className="truncate">{agent.name}</CardTitle>
-                    <div className="mt-1 inline-flex rounded-full border px-2 py-0.5 text-xs">
+                    <div className="mt-1 inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                       {modelLabel(agent.model_name)}
                     </div>
                   </div>
-                  <div className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs">
+                  <div className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
                     <Wrench className="h-3.5 w-3.5" />
                     {agent.explicitTools.length}
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                    Temp: {formatTemp(clamp(agent.temperature ?? 0.7, 0, 1))}
+                  {t("card.temperature", {
+                    value: formatTemp(clamp(agent.temperature ?? 0.7, 0, 1)),
+                  })}
                 </div>
               </CardHeader>
 
               <CardContent className="space-y-4">
-                <p className="text-sm text-muted-foreground">{promptSnippet(agent.system_prompt)}</p>
+                <p className="text-sm text-muted-foreground">
+                  {promptSnippet(agent.system_prompt, t("card.noPrompt"))}
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {agent.explicitTools.length === 0 ? (
-                    <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs">
-                      No explicit tools
+                    <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                      {t("card.noExplicitTools")}
                     </span>
                   ) : (
-                    agent.explicitTools.slice(0, 4).map((t) => (
-                      <span key={t.id} className="inline-flex rounded-full bg-muted px-2 py-1 text-xs">
-                        {toolLabel(t)}
+                    agent.explicitTools.slice(0, 4).map((tool) => (
+                      <span
+                        key={tool.id}
+                        className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary"
+                      >
+                        {toolLabel(tool)}
                       </span>
                     ))
                   )}
                   {agent.explicitTools.length > 4 ? (
-                    <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs">
-                      +{agent.explicitTools.length - 4} more
+                    <span className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary">
+                      {t("card.moreTools", {
+                        count: agent.explicitTools.length - 4,
+                      })}
                     </span>
                   ) : null}
                 </div>
               </CardContent>
 
               <CardFooter className="justify-between">
-                <Button variant="outline" onClick={() => openEdit(agent)}>
-                  Modify Configuration
+                <Button
+                  variant="outline"
+                  className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
+                  onClick={() => openEdit(agent)}
+                >
+                  {t("card.modifyConfiguration")}
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" disabled={deletingId === agent.id}>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={deletingId === agent.id}
+                      aria-label={t("a11y.actionsMenu")}
+                    >
                       {deletingId === agent.id ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
@@ -584,14 +642,14 @@ export default function AgentsPage() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-44">
                     <DropdownMenuItem onClick={() => openEdit(agent)}>
-                      Modify Configuration
+                      {t("card.modifyConfiguration")}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
                       onClick={() => void deleteAgent(agent.id)}
                     >
                       <Trash2 className="h-4 w-4" />
-                      Delete Agent
+                      {t("card.deleteAgent")}
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -601,50 +659,69 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <Dialog open={drawerOpen} onOpenChange={(open) => (!open ? closeDialog() : setDrawerOpen(true))}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => (open ? setDialogOpen(true) : closeDialog())}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editingAgentId ? "Modify Agent" : "Create Agent"}</DialogTitle>
-            <DialogDescription>
-              Configure persona, model settings, and explicit tool integrations.
-            </DialogDescription>
+            <DialogTitle>
+              {editingAgentId
+                ? t("dialog.modifyTitle")
+                : t("dialog.createTitle")}
+            </DialogTitle>
+            <DialogDescription>{t("dialog.description")}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-6">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Name</label>
+              <label className="text-sm font-medium" htmlFor="agent-name">
+                {t("dialog.name")}
+              </label>
               <Input
+                id="agent-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g., Customer Support Assistant"
+                placeholder={t("dialog.namePlaceholder")}
                 className="h-9"
               />
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
-                <label className="text-sm font-medium">System Prompt</label>
-                <span className="inline-flex rounded-full border px-2 py-1 text-xs">Persona + constraints</span>
+                <label className="text-sm font-medium" htmlFor="agent-prompt">
+                  {t("dialog.systemPrompt")}
+                </label>
+                <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                  {t("dialog.personaBadge")}
+                </span>
               </div>
               <Textarea
+                id="agent-prompt"
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="Describe the agent's role, style, and boundaries…"
+                placeholder={t("dialog.systemPromptPlaceholder")}
                 rows={8}
               />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Model</label>
+                <label className="text-sm font-medium" htmlFor="agent-model">
+                  {t("dialog.model")}
+                </label>
                 <select
+                  id="agent-model"
                   value={modelName}
-                  onChange={(e) => setModelName(e.target.value as (typeof MODEL_OPTIONS)[number]["value"])}
-                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (isModelValue(value)) setModelName(value);
+                  }}
+                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/30"
                 >
-                  {MODEL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
+                  {MODEL_VALUES.map((value) => (
+                    <option key={value} value={value}>
+                      {t(`models.${value}`)}
                     </option>
                   ))}
                 </select>
@@ -652,21 +729,26 @@ export default function AgentsPage() {
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <label className="text-sm font-medium">Temperature</label>
-                  <span className="inline-flex rounded-full border px-2 py-1 text-xs">
+                  <label className="text-sm font-medium" htmlFor="agent-temp">
+                    {t("dialog.temperature")}
+                  </label>
+                  <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
                     {formatTemp(temperature)}
                   </span>
                 </div>
                 <Slider
+                  id="agent-temp"
                   min={0}
                   max={1}
                   step={0.1}
                   value={[temperature]}
-                  onValueChange={(v) => setTemperature(clamp(v[0] ?? 0.7, 0, 1))}
+                  onValueChange={(v) =>
+                    setTemperature(clamp(v[0] ?? 0.7, 0, 1))
+                  }
                 />
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>0.0 Deterministic</span>
-                  <span>1.0 Creative</span>
+                  <span>{t("dialog.tempDeterministic")}</span>
+                  <span>{t("dialog.tempCreative")}</span>
                 </div>
               </div>
             </div>
@@ -674,47 +756,55 @@ export default function AgentsPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium">Explicit tool integrations</div>
+                  <div className="text-sm font-medium">
+                    {t("dialog.explicitToolsTitle")}
+                  </div>
                   <div className="text-xs text-muted-foreground">
-                    Bind/unbind real-world execution rights (email, webhooks, proxies).
+                    {t("dialog.explicitToolsDescription")}
                   </div>
                 </div>
-                <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs">
-                  {selectedToolIds.size} selected
+                <span className="inline-flex rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                  {t("dialog.selectedCount", { count: selectedToolIds.size })}
                 </span>
               </div>
 
               {explicitTools.length === 0 ? (
-                <div className="rounded-xl border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
-                  No explicit tools available yet. Create tools first, then come back to grant them to an agent.
+                <div className="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4 text-sm text-muted-foreground">
+                  {t("dialog.noToolsAvailable")}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {explicitTools.map((t) => {
-                    const checked = selectedToolIds.has(t.id);
+                  {explicitTools.map((tool) => {
+                    const checked = selectedToolIds.has(tool.id);
                     return (
                       <label
-                        key={t.id}
+                        key={tool.id}
                         className={cn(
                           "flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors",
-                          checked ? "border-primary bg-muted/40" : "hover:bg-muted/40",
+                          checked
+                            ? "border-primary bg-primary/10 ring-1 ring-primary/20"
+                            : "hover:bg-primary/5",
                         )}
                       >
                         <input
                           type="checkbox"
                           checked={checked}
-                          onChange={() => toggleTool(t.id)}
+                          onChange={() => toggleTool(tool.id)}
                           className="mt-1 h-4 w-4 accent-primary"
                         />
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <div className="truncate text-sm font-semibold">{toolLabel(t)}</div>
-                            <span className="inline-flex rounded-full border px-2 py-0.5 text-[10px]">
-                              explicit
+                            <div className="truncate text-sm font-semibold">
+                              {toolLabel(tool)}
+                            </div>
+                            <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                              {t("dialog.explicitBadge")}
                             </span>
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">
-                            {t.description?.trim() ? t.description : "No description provided."}
+                            {tool.description?.trim()
+                              ? tool.description
+                              : t("dialog.noToolDescription")}
                           </div>
                         </div>
                       </label>
@@ -726,23 +816,23 @@ export default function AgentsPage() {
           </div>
 
           <DialogFooter className="items-center justify-between sm:justify-between">
-            <div className="text-xs text-muted-foreground mr-auto">
-              Implicit tools are always-on and don’t appear here.
+            <div className="mr-auto text-xs text-muted-foreground">
+              {t("dialog.implicitNote")}
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={closeDialog} disabled={saving}>
-                Cancel
+                {t("dialog.cancel")}
               </Button>
               <Button onClick={() => void upsertAgent()} disabled={saving}>
                 {saving ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Saving
+                    {t("dialog.saving")}
                   </>
                 ) : editingAgentId ? (
-                  "Save Changes"
+                  t("dialog.saveChanges")
                 ) : (
-                  "Create Agent"
+                  t("createButton")
                 )}
               </Button>
             </div>
