@@ -8,7 +8,6 @@ import {
   Coins,
   Database,
 } from "lucide-react";
-import { getTranslations } from "next-intl/server";
 
 export default async function DashboardLayout({
   children,
@@ -17,32 +16,29 @@ export default async function DashboardLayout({
   children: React.ReactNode;
   params: Promise<{ locale: string }>;
 }) {
-  const { locale } = await params;
-  const t = await getTranslations("layout");
-
   const menuItems = [
     // {
-    //   name: t("dashboard"),
+    //   name: "Dashboard",
     //   href: "/",
     //   icon: <LayoutDashboard size={18} />,
     // },
     {
-      name: t("agents"),
+      name: "智能体",
       href: "/agents",
       icon: <Bot size={18} />,
     },
     {
-      name: t("workflows"),
+      name: "智能体工作流",
       href: "/workflows",
       icon: <GitBranch size={18} />,
     },
     // {
-    //   name: t("logs"),
+    //   name: "日志",
     //   href: "/logs",
     //   icon: <Terminal size={18} />,
     // },
     // {
-    //   name: t("usage"),
+    //   name: "用量",
     //   href: "/usage",
     //   icon: <Coins size={18} />,
     // },
@@ -57,7 +53,7 @@ export default async function DashboardLayout({
             <span className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs">
               MMA
             </span>
-            {t("title")}
+            Multi-Agent Collaboration
           </div>
 
           {/* Navigation Link Menu List */}
@@ -82,7 +78,7 @@ export default async function DashboardLayout({
           </div>
           <div className="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-zinc-400">
             <Database size={18} />
-            {t("knowledgeBase")}
+            {"知识库"}
           </div>
         </div>
       </aside>

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Bot,
   Grid2X2,
@@ -13,7 +13,6 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
-import { useTranslations } from "next-intl";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,7 +39,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn, getUserId } from "@/lib/utils";
 
 type UUID = string;
 
@@ -82,6 +81,12 @@ const MODEL_VALUES = [
 
 type ModelValue = (typeof MODEL_VALUES)[number];
 
+const MODEL_LABELS: Record<ModelValue, string> = {
+  "gemini-2-5-flash": "Gemini 2.5 Flash",
+  "gpt-4o": "GPT-4o",
+  "claude-3-5-sonnet": "Claude 3.5 Sonnet",
+};
+
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
@@ -99,6 +104,11 @@ function getErrorMessage(err: unknown) {
 
 function isModelValue(value: string | null): value is ModelValue {
   return MODEL_VALUES.includes(value as ModelValue);
+}
+
+function modelLabel(model: string | null) {
+  if (isModelValue(model)) return MODEL_LABELS[model];
+  return "未知模型";
 }
 
 function toolLabel(tool: ToolRow) {
@@ -140,8 +150,6 @@ function SkeletonCard() {
 }
 
 export default function AgentsPage() {
-  const t = useTranslations("agentsPanel");
-
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,17 +171,6 @@ export default function AgentsPage() {
 
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<UUID | null>(null);
-
-  const modelLabel = useCallback(
-    (model: string | null) => {
-      if (isModelValue(model)) {
-        console.log("model: ", model);
-        return t(`models.${model}`);
-      }
-      return t("models.unknown");
-    },
-    [t],
-  );
 
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -215,35 +212,27 @@ export default function AgentsPage() {
   async function loadAll({ silent = false }: { silent?: boolean } = {}) {
     if (!silent) setLoading(true);
     setError(null);
+    const mockUserId = getUserId();
     try {
-      const { data: userRes, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      const user = userRes.user;
-      if (!user) {
-        setAgents([]);
-        setExplicitTools([]);
-        setError(t("errors.notSignedIn"));
-        return;
-      }
-
       const [agentsRes, toolsRes] = await Promise.all([
         supabase
           .from("agents")
           .select(
             "id,user_id,name,system_prompt,model_name,temperature,created_at",
           )
-          .eq("user_id", user.id)
+          .eq("user_id", mockUserId)
           .order("created_at", { ascending: false }),
         supabase
           .from("tools")
           .select(
             "id,user_id,name,display_name,description,tool_type,connection_config",
           )
-          .eq("user_id", user.id)
+          .eq("user_id", mockUserId)
           .eq("tool_type", "explicit")
           .order("display_name", { ascending: true }),
       ]);
 
+      console.log("agentRes: ", agentsRes, toolsRes);
       if (agentsRes.error) throw agentsRes.error;
       if (toolsRes.error) throw toolsRes.error;
 
@@ -284,7 +273,7 @@ export default function AgentsPage() {
 
       setAgents(hydrated);
     } catch (e: unknown) {
-      setError(getErrorMessage(e) ?? t("errors.loadFailed"));
+      setError(getErrorMessage(e) ?? "加载智能体失败。");
     } finally {
       if (!silent) setLoading(false);
     }
@@ -299,7 +288,6 @@ export default function AgentsPage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial fetch only
   }, []);
 
   async function handleRefresh() {
@@ -315,7 +303,7 @@ export default function AgentsPage() {
     if (saving) return;
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError(t("errors.nameRequired"));
+      setError("智能体名称为必填项。");
       return;
     }
 
@@ -326,7 +314,7 @@ export default function AgentsPage() {
       if (userErr) throw userErr;
       const user = userRes.user;
       if (!user) {
-        setError(t("errors.notSignedInSave"));
+        setError("未登录。");
         return;
       }
 
@@ -356,7 +344,7 @@ export default function AgentsPage() {
       }
 
       if (!agentId) {
-        setError(t("errors.resolveAgentId"));
+        setError("无法解析智能体 ID。");
         return;
       }
 
@@ -381,7 +369,7 @@ export default function AgentsPage() {
       closeDialog();
       await loadAll({ silent: true });
     } catch (e: unknown) {
-      setError(getErrorMessage(e) ?? t("errors.saveFailed"));
+      setError(getErrorMessage(e) ?? "保存智能体失败。");
     } finally {
       setSaving(false);
     }
@@ -396,7 +384,7 @@ export default function AgentsPage() {
       if (userErr) throw userErr;
       const user = userRes.user;
       if (!user) {
-        setError(t("errors.notSignedInSave"));
+        setError("未登录。");
         return;
       }
 
@@ -415,7 +403,7 @@ export default function AgentsPage() {
 
       await loadAll({ silent: true });
     } catch (e: unknown) {
-      setError(getErrorMessage(e) ?? t("errors.deleteFailed"));
+      setError(getErrorMessage(e) ?? "删除智能体失败。");
     } finally {
       setDeletingId(null);
     }
@@ -444,9 +432,11 @@ export default function AgentsPage() {
             </div>
             <div>
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                {t("title")}
+                AI 智能体目录
               </h1>
-              <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
+              <p className="text-sm text-muted-foreground">
+                在将智能体拖入工作流画布之前，浏览、搜索并配置它们。
+              </p>
             </div>
           </div>
         </div>
@@ -460,18 +450,18 @@ export default function AgentsPage() {
             {refreshing ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {t("refreshing")}
+                刷新中
               </>
             ) : (
               <>
                 <SlidersHorizontal className="h-4 w-4" />
-                {t("refresh")}
+                刷新
               </>
             )}
           </Button>
           <Button onClick={openCreate} size="lg">
             <Plus className="h-4 w-4" />
-            {t("createButton")}
+            创建智能体
           </Button>
         </div>
       </div>
@@ -482,23 +472,20 @@ export default function AgentsPage() {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={t("searchPlaceholder")}
+            placeholder="按名称搜索智能体…"
             className="h-9 border-primary/20 pl-9 focus-visible:border-primary focus-visible:ring-primary/30"
           />
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden rounded-full border border-primary/20 bg-primary/5 px-2 py-1 text-xs font-medium text-primary sm:inline-flex">
-            {t("count", {
-              filtered: filteredAgents.length,
-              total: agents.length,
-            })}
+            {filteredAgents.length} / {agents.length}
           </span>
           <Button
             variant={gridCompact ? "outline" : "default"}
             size="icon-sm"
             onClick={() => setGridCompact(false)}
             disabled={!gridCompact}
-            aria-label={t("a11y.gridView")}
+            aria-label="宽松网格视图"
           >
             <Grid2X2 className="h-4 w-4" />
           </Button>
@@ -507,7 +494,7 @@ export default function AgentsPage() {
             size="icon-sm"
             onClick={() => setGridCompact(true)}
             disabled={gridCompact}
-            aria-label={t("a11y.compactView")}
+            aria-label="紧凑网格视图"
           >
             <LayoutList className="h-4 w-4" />
           </Button>
@@ -532,15 +519,15 @@ export default function AgentsPage() {
             <Bot className="h-6 w-6 text-primary" />
           </div>
           <div className="mt-4 text-lg font-semibold text-foreground">
-            {t("empty.title")}
+            暂无智能体
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            {t("empty.description")}
+            创建您的第一个智能体，设置系统提示词、选择模型，并授予显式工具集成权限。
           </div>
           <div className="mt-5 flex justify-center">
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              {t("empty.action")}
+              创建智能体
             </Button>
           </div>
         </div>
@@ -550,14 +537,14 @@ export default function AgentsPage() {
             <Search className="h-6 w-6 text-primary" />
           </div>
           <div className="mt-4 text-lg font-semibold text-foreground">
-            {t("noMatch.title")}
+            未找到匹配的智能体
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            {t("noMatch.description")}
+            请尝试其他搜索关键词。
           </div>
           <div className="mt-5 flex justify-center">
             <Button variant="outline" onClick={() => setQuery("")}>
-              {t("noMatch.clearSearch")}
+              清除搜索
             </Button>
           </div>
         </div>
@@ -582,20 +569,19 @@ export default function AgentsPage() {
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {t("card.temperature", {
-                    value: formatTemp(clamp(agent.temperature ?? 0.7, 0, 1)),
-                  })}
+                  温度：
+                  {formatTemp(clamp(agent.temperature ?? 0.7, 0, 1))}
                 </div>
               </CardHeader>
 
               <CardContent className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  {promptSnippet(agent.system_prompt, t("card.noPrompt"))}
+                  {promptSnippet(agent.system_prompt, "暂无系统提示词。")}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {agent.explicitTools.length === 0 ? (
                     <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
-                      {t("card.noExplicitTools")}
+                      无显式工具
                     </span>
                   ) : (
                     agent.explicitTools.slice(0, 4).map((tool) => (
@@ -609,9 +595,7 @@ export default function AgentsPage() {
                   )}
                   {agent.explicitTools.length > 4 ? (
                     <span className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary">
-                      {t("card.moreTools", {
-                        count: agent.explicitTools.length - 4,
-                      })}
+                      另有 {agent.explicitTools.length - 4} 个
                     </span>
                   ) : null}
                 </div>
@@ -623,7 +607,7 @@ export default function AgentsPage() {
                   className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
                   onClick={() => openEdit(agent)}
                 >
-                  {t("card.modifyConfiguration")}
+                  修改配置
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -631,7 +615,7 @@ export default function AgentsPage() {
                       variant="ghost"
                       size="icon-sm"
                       disabled={deletingId === agent.id}
-                      aria-label={t("a11y.actionsMenu")}
+                      aria-label="智能体操作"
                     >
                       {deletingId === agent.id ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -642,14 +626,14 @@ export default function AgentsPage() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-44">
                     <DropdownMenuItem onClick={() => openEdit(agent)}>
-                      {t("card.modifyConfiguration")}
+                      修改配置
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
                       onClick={() => void deleteAgent(agent.id)}
                     >
                       <Trash2 className="h-4 w-4" />
-                      {t("card.deleteAgent")}
+                      删除智能体
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -666,23 +650,23 @@ export default function AgentsPage() {
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>
-              {editingAgentId
-                ? t("dialog.modifyTitle")
-                : t("dialog.createTitle")}
+              {editingAgentId ? "修改智能体" : "创建智能体"}
             </DialogTitle>
-            <DialogDescription>{t("dialog.description")}</DialogDescription>
+            <DialogDescription>
+              配置角色设定、模型参数和显式工具集成。
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-6">
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="agent-name">
-                {t("dialog.name")}
+                名称
               </label>
               <Input
                 id="agent-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={t("dialog.namePlaceholder")}
+                placeholder="例如：客户支持助手"
                 className="h-9"
               />
             </div>
@@ -690,17 +674,17 @@ export default function AgentsPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <label className="text-sm font-medium" htmlFor="agent-prompt">
-                  {t("dialog.systemPrompt")}
+                  系统提示词
                 </label>
                 <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                  {t("dialog.personaBadge")}
+                  角色 + 约束
                 </span>
               </div>
               <Textarea
                 id="agent-prompt"
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder={t("dialog.systemPromptPlaceholder")}
+                placeholder="描述智能体的职责、风格与边界…"
                 rows={8}
               />
             </div>
@@ -708,7 +692,7 @@ export default function AgentsPage() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="agent-model">
-                  {t("dialog.model")}
+                  模型
                 </label>
                 <select
                   id="agent-model"
@@ -721,7 +705,7 @@ export default function AgentsPage() {
                 >
                   {MODEL_VALUES.map((value) => (
                     <option key={value} value={value}>
-                      {t(`models.${value}`)}
+                      {MODEL_LABELS[value]}
                     </option>
                   ))}
                 </select>
@@ -730,7 +714,7 @@ export default function AgentsPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <label className="text-sm font-medium" htmlFor="agent-temp">
-                    {t("dialog.temperature")}
+                    温度
                   </label>
                   <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
                     {formatTemp(temperature)}
@@ -747,8 +731,8 @@ export default function AgentsPage() {
                   }
                 />
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{t("dialog.tempDeterministic")}</span>
-                  <span>{t("dialog.tempCreative")}</span>
+                  <span>0.0 确定性</span>
+                  <span>1.0 创造性</span>
                 </div>
               </div>
             </div>
@@ -756,21 +740,19 @@ export default function AgentsPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-medium">
-                    {t("dialog.explicitToolsTitle")}
-                  </div>
+                  <div className="text-sm font-medium">显式工具集成</div>
                   <div className="text-xs text-muted-foreground">
-                    {t("dialog.explicitToolsDescription")}
+                    绑定/解绑真实世界执行权限（邮件、Webhook、代理等）。
                   </div>
                 </div>
                 <span className="inline-flex rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                  {t("dialog.selectedCount", { count: selectedToolIds.size })}
+                  已选 {selectedToolIds.size} 项
                 </span>
               </div>
 
               {explicitTools.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4 text-sm text-muted-foreground">
-                  {t("dialog.noToolsAvailable")}
+                  暂无可用显式工具。请先创建工具，再返回此处授予智能体权限。
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -798,13 +780,13 @@ export default function AgentsPage() {
                               {toolLabel(tool)}
                             </div>
                             <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                              {t("dialog.explicitBadge")}
+                              显式
                             </span>
                           </div>
                           <div className="mt-1 text-xs text-muted-foreground">
                             {tool.description?.trim()
                               ? tool.description
-                              : t("dialog.noToolDescription")}
+                              : "暂无描述。"}
                           </div>
                         </div>
                       </label>
@@ -817,22 +799,22 @@ export default function AgentsPage() {
 
           <DialogFooter className="items-center justify-between sm:justify-between">
             <div className="mr-auto text-xs text-muted-foreground">
-              {t("dialog.implicitNote")}
+              隐式工具始终启用，不会在此显示。
             </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={closeDialog} disabled={saving}>
-                {t("dialog.cancel")}
+                取消
               </Button>
               <Button onClick={() => void upsertAgent()} disabled={saving}>
                 {saving ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    {t("dialog.saving")}
+                    保存中
                   </>
                 ) : editingAgentId ? (
-                  t("dialog.saveChanges")
+                  "保存更改"
                 ) : (
-                  t("createButton")
+                  "创建智能体"
                 )}
               </Button>
             </div>
