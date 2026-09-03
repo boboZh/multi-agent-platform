@@ -1,6 +1,6 @@
 "use client";
 
 export default function Dashboard() {
-  return <div>首页</div>;
+  return <div className="p-8">首页</div>;
 }
 /*  */

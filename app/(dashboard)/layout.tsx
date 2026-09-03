@@ -1,27 +1,21 @@
-import React from "react";
-import Link from "next/link";
-import {
-  LayoutDashboard,
-  Bot,
-  GitBranch,
-  Terminal,
-  Coins,
-  Database,
-} from "lucide-react";
+"use client";
 
-export default async function DashboardLayout({
+import React, { useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Bot, GitBranch, Database, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+export default function DashboardLayout({
   children,
-  params,
 }: {
   children: React.ReactNode;
-  params: Promise<{ locale: string }>;
 }) {
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const pathname = usePathname();
+
   const menuItems = [
-    // {
-    //   name: "Dashboard",
-    //   href: "/",
-    //   icon: <LayoutDashboard size={18} />,
-    // },
     {
       name: "智能体",
       href: "/agents",
@@ -32,63 +26,110 @@ export default async function DashboardLayout({
       href: "/workflows",
       icon: <GitBranch size={18} />,
     },
-    // {
-    //   name: "日志",
-    //   href: "/logs",
-    //   icon: <Terminal size={18} />,
-    // },
-    // {
-    //   name: "用量",
-    //   href: "/usage",
-    //   icon: <Coins size={18} />,
-    // },
   ];
+
   return (
-    <div className="flex h-screen w-screen bg-zinc-50 overflow-hidden text-zinc-900 font-sans">
-      {/* 🧭 PERSISTENT LEFT SIDEBAR */}
-      <aside className="w-64 bg-white border-r border-zinc-200 flex flex-col justify-between p-4 shrink-0">
-        <div className="space-y-6">
-          {/* Platform Branding Logo Header */}
-          <div className="px-2 py-1.5 flex items-center gap-2 font-bold text-lg tracking-tight border-b border-zinc-100 pb-4">
-            <span className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs">
+    <div className="flex h-screen w-screen overflow-hidden bg-zinc-50 font-sans text-zinc-900">
+      <aside
+        className={cn(
+          "flex shrink-0 flex-col justify-between border-r border-zinc-200 bg-white transition-[width,padding] duration-200 ease-out",
+          sidebarExpanded ? "w-64 p-4" : "w-16 items-center px-2 py-3",
+        )}
+      >
+        <div className={cn("flex flex-col", sidebarExpanded ? "space-y-6" : "items-center gap-3")}>
+          <div
+            className={cn(
+              "flex items-center border-b border-zinc-100",
+              sidebarExpanded ? "gap-2 px-2 py-1.5 pb-4" : "flex-col gap-2 pb-3",
+            )}
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-xs font-bold text-white">
               MMA
             </span>
-            Multi-Agent Collaboration
+            {sidebarExpanded ? (
+              <span className="flex-1 truncate text-lg font-bold tracking-tight">
+                Multi-Agent Collaboration
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="relative shrink-0"
+              onClick={() => setSidebarExpanded((open) => !open)}
+              aria-label={sidebarExpanded ? "关闭边栏" : "打开边栏"}
+            >
+              {sidebarExpanded ? <PanelLeftClose /> : <PanelLeftOpen />}
+              <span className="pointer-events-none absolute top-1/2 left-full z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-sm transition-opacity group-hover/button:opacity-100">
+                {sidebarExpanded ? "关闭边栏" : "打开边栏"}
+              </span>
+            </Button>
           </div>
 
-          {/* Navigation Link Menu List */}
-          <nav className="space-y-1">
-            {menuItems.map((item) => (
-              <Link
-                key={item.name}
-                href={item.href}
-                className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100/80 transition-colors"
-              >
-                {item.icon}
-                {item.name}
-              </Link>
-            ))}
+          <nav className={cn("space-y-1", !sidebarExpanded && "flex flex-col items-center")}>
+            {menuItems.map((item) => {
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  title={item.name}
+                  aria-label={item.name}
+                  className={cn(
+                    "group relative flex items-center rounded-lg text-sm font-medium transition-colors",
+                    sidebarExpanded
+                      ? "gap-3 px-3 py-2.5"
+                      : "h-9 w-9 justify-center",
+                    active
+                      ? "bg-primary/10 text-primary"
+                      : "text-zinc-600 hover:bg-zinc-100/80 hover:text-zinc-900",
+                  )}
+                >
+                  {item.icon}
+                  {sidebarExpanded ? (
+                    item.name
+                  ) : (
+                    <span className="pointer-events-none absolute top-1/2 left-full z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+                      {item.name}
+                    </span>
+                  )}
+                </Link>
+              );
+            })}
           </nav>
         </div>
 
-        {/* Future Extension Slot: Disabled/Hidden placeholder until you build Vector DB features */}
-        <div className="border-t border-zinc-100 pt-4 opacity-50 pointer-events-none">
-          <div className="flex items-center gap-3 px-3 py-2 text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1">
-            Coming Soon
-          </div>
-          <div className="flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg text-zinc-400">
-            <Database size={18} />
-            {"知识库"}
-          </div>
+        <div
+          className={cn(
+            "border-t border-zinc-100 opacity-50",
+            sidebarExpanded
+              ? "pointer-events-none pt-4"
+              : "flex justify-center pt-3",
+          )}
+        >
+          {sidebarExpanded ? (
+            <>
+              <div className="mb-1 flex items-center gap-3 px-3 py-2 text-xs font-semibold tracking-wider text-zinc-400 uppercase">
+                Coming Soon
+              </div>
+              <div className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-zinc-400">
+                <Database size={18} />
+                知识库
+              </div>
+            </>
+          ) : (
+            <div className="group relative flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400">
+              <Database size={18} />
+              <span className="pointer-events-none absolute top-1/2 left-full z-50 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100">
+                知识库
+              </span>
+            </div>
+          )}
         </div>
       </aside>
 
-      {/* 🖥️ MAIN APPLICATION WORKSPACE VIEWPORTS */}
-      <main className="flex-1 flex flex-col overflow-y-auto">
-        <div className="p-8 max-w-7xl w-full mx-auto flex-1 min-h-0">
-          {children}{" "}
-          {/* 👈 This is where page.tsx, agents/page.tsx, etc., get rendered */}
-        </div>
+      <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {children}
       </main>
     </div>
   );

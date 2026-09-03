@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Bot,
   Grid2X2,
@@ -23,107 +24,28 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
-import { Textarea } from "@/components/ui/textarea";
-import { cn, getUserId } from "@/lib/utils";
-
-type UUID = string;
-
-type AgentRow = {
-  id: UUID;
-  user_id: UUID;
-  name: string;
-  system_prompt: string | null;
-  model_name: string | null;
-  temperature: number | null;
-  created_at: string;
-};
-
-type ToolRow = {
-  id: UUID;
-  user_id: UUID;
-  name: string;
-  display_name: string | null;
-  description: string | null;
-  tool_type: "explicit" | "implicit" | string;
-  connection_config: unknown;
-};
-
-type AgentToolRow = {
-  id: UUID;
-  agent_id: UUID;
-  tool_id: UUID;
-};
-
-type AgentWithTools = AgentRow & {
-  explicitTools: ToolRow[];
-};
-
-const MODEL_VALUES = [
-  "gemini-2-5-flash",
-  "gpt-4o",
-  "claude-3-5-sonnet",
-] as const;
-
-type ModelValue = (typeof MODEL_VALUES)[number];
-
-const MODEL_LABELS: Record<ModelValue, string> = {
-  "gemini-2-5-flash": "Gemini 2.5 Flash",
-  "gpt-4o": "GPT-4o",
-  "claude-3-5-sonnet": "Claude 3.5 Sonnet",
-};
-
-function clamp(n: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, n));
-}
-
-function formatTemp(v: number) {
-  const rounded = Math.round(v * 10) / 10;
-  return rounded.toFixed(1);
-}
-
-function getErrorMessage(err: unknown) {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  return null;
-}
-
-function isModelValue(value: string | null): value is ModelValue {
-  return MODEL_VALUES.includes(value as ModelValue);
-}
-
-function modelLabel(model: string | null) {
-  if (isModelValue(model)) return MODEL_LABELS[model];
-  return "未知模型";
-}
-
-function toolLabel(tool: ToolRow) {
-  return tool.display_name?.trim() || tool.name;
-}
-
-function promptSnippet(
-  prompt: string | null,
-  emptyLabel: string,
-  maxLen = 140,
-) {
-  const p = (prompt || "").trim().replaceAll(/\s+/g, " ");
-  if (!p) return emptyLabel;
-  return p.length <= maxLen ? p : `${p.slice(0, maxLen - 1)}…`;
-}
+import { AgentEditorDialog } from "./agent-editor-dialog";
+import type {
+  AgentRow,
+  AgentToolRow,
+  AgentWithTools,
+  ToolRow,
+  UUID,
+} from "./types";
+import {
+  clamp,
+  formatTemp,
+  getErrorMessage,
+  modelLabel,
+  promptSnippet,
+  toolLabel,
+} from "./utils";
 
 function SkeletonCard() {
   return (
@@ -150,6 +72,7 @@ function SkeletonCard() {
 }
 
 export default function AgentsPage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -160,16 +83,8 @@ export default function AgentsPage() {
   const [query, setQuery] = useState("");
   const [gridCompact, setGridCompact] = useState(false);
 
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingAgentId, setEditingAgentId] = useState<UUID | null>(null);
-
-  const [name, setName] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [modelName, setModelName] = useState<ModelValue>(MODEL_VALUES[0]);
-  const [temperature, setTemperature] = useState(0.7);
-  const [selectedToolIds, setSelectedToolIds] = useState<Set<UUID>>(new Set());
-
-  const [saving, setSaving] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<AgentWithTools | null>(null);
   const [deletingId, setDeletingId] = useState<UUID | null>(null);
 
   const filteredAgents = useMemo(() => {
@@ -178,41 +93,21 @@ export default function AgentsPage() {
     return agents.filter((a) => a.name.toLowerCase().includes(q));
   }, [agents, query]);
 
-  function resetForm() {
-    setEditingAgentId(null);
-    setName("");
-    setSystemPrompt("");
-    setModelName(MODEL_VALUES[0]);
-    setTemperature(0.7);
-    setSelectedToolIds(new Set());
-  }
-
   function openCreate() {
-    resetForm();
-    setDialogOpen(true);
+    setEditingAgent(null);
+    setEditorOpen(true);
   }
 
   function openEdit(agent: AgentWithTools) {
-    setEditingAgentId(agent.id);
-    setName(agent.name || "");
-    setSystemPrompt(agent.system_prompt || "");
-    setModelName(
-      isModelValue(agent.model_name) ? agent.model_name : MODEL_VALUES[0],
-    );
-    setTemperature(clamp(agent.temperature ?? 0.7, 0, 1));
-    setSelectedToolIds(new Set(agent.explicitTools.map((tool) => tool.id)));
-    setDialogOpen(true);
-  }
-
-  function closeDialog() {
-    setDialogOpen(false);
-    resetForm();
+    setEditingAgent(agent);
+    setEditorOpen(true);
   }
 
   async function loadAll({ silent = false }: { silent?: boolean } = {}) {
     if (!silent) setLoading(true);
     setError(null);
-    const mockUserId = getUserId();
+    console.log("mockUserId: ", process.env);
+    const mockUserId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
     try {
       const [agentsRes, toolsRes] = await Promise.all([
         supabase
@@ -299,82 +194,6 @@ export default function AgentsPage() {
     }
   }
 
-  async function upsertAgent() {
-    if (saving) return;
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      setError("智能体名称为必填项。");
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-    try {
-      const { data: userRes, error: userErr } = await supabase.auth.getUser();
-      if (userErr) throw userErr;
-      const user = userRes.user;
-      if (!user) {
-        setError("未登录。");
-        return;
-      }
-
-      const payload = {
-        name: trimmedName,
-        system_prompt: systemPrompt.trim(),
-        model_name: modelName,
-        temperature: clamp(temperature, 0, 1),
-      };
-
-      let agentId = editingAgentId;
-      if (editingAgentId) {
-        const { error: updErr } = await supabase
-          .from("agents")
-          .update(payload)
-          .eq("id", editingAgentId)
-          .eq("user_id", user.id);
-        if (updErr) throw updErr;
-      } else {
-        const { data: insData, error: insErr } = await supabase
-          .from("agents")
-          .insert({ user_id: user.id, ...payload })
-          .select("id")
-          .single();
-        if (insErr) throw insErr;
-        agentId = (insData as { id: UUID } | null)?.id ?? null;
-      }
-
-      if (!agentId) {
-        setError("无法解析智能体 ID。");
-        return;
-      }
-
-      const selected = Array.from(selectedToolIds);
-      const { error: delErr } = await supabase
-        .from("agent_tools")
-        .delete()
-        .eq("agent_id", agentId);
-      if (delErr) throw delErr;
-
-      if (selected.length > 0) {
-        const rows = selected.map((tool_id) => ({
-          agent_id: agentId,
-          tool_id,
-        }));
-        const { error: bindErr } = await supabase
-          .from("agent_tools")
-          .insert(rows);
-        if (bindErr) throw bindErr;
-      }
-
-      closeDialog();
-      await loadAll({ silent: true });
-    } catch (e: unknown) {
-      setError(getErrorMessage(e) ?? "保存智能体失败。");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function deleteAgent(agentId: UUID) {
     if (deletingId) return;
     setDeletingId(agentId);
@@ -409,21 +228,13 @@ export default function AgentsPage() {
     }
   }
 
-  function toggleTool(toolId: UUID) {
-    setSelectedToolIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(toolId)) next.delete(toolId);
-      else next.add(toolId);
-      return next;
-    });
-  }
-
   const gridCols = gridCompact
     ? "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
     : "grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3";
 
   return (
-    <div className="space-y-6">
+    <div className="flex-1 overflow-y-auto p-8">
+    <div className="mx-auto w-full max-w-7xl space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
@@ -553,7 +364,8 @@ export default function AgentsPage() {
           {filteredAgents.map((agent) => (
             <Card
               key={agent.id}
-              className="group transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/20"
+              className="group cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/20"
+              onClick={() => router.push(`/agents/${agent.id}`)}
             >
               <CardHeader className="pb-2">
                 <div className="flex items-start justify-between gap-3">
@@ -601,7 +413,10 @@ export default function AgentsPage() {
                 </div>
               </CardContent>
 
-              <CardFooter className="justify-between">
+              <CardFooter
+                className="justify-between"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <Button
                   variant="outline"
                   className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
@@ -643,184 +458,15 @@ export default function AgentsPage() {
         </div>
       )}
 
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={(open) => (open ? setDialogOpen(true) : closeDialog())}
-      >
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {editingAgentId ? "修改智能体" : "创建智能体"}
-            </DialogTitle>
-            <DialogDescription>
-              配置角色设定、模型参数和显式工具集成。
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="agent-name">
-                名称
-              </label>
-              <Input
-                id="agent-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="例如：客户支持助手"
-                className="h-9"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <label className="text-sm font-medium" htmlFor="agent-prompt">
-                  系统提示词
-                </label>
-                <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                  角色 + 约束
-                </span>
-              </div>
-              <Textarea
-                id="agent-prompt"
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="描述智能体的职责、风格与边界…"
-                rows={8}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label className="text-sm font-medium" htmlFor="agent-model">
-                  模型
-                </label>
-                <select
-                  id="agent-model"
-                  value={modelName}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    if (isModelValue(value)) setModelName(value);
-                  }}
-                  className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/30"
-                >
-                  {MODEL_VALUES.map((value) => (
-                    <option key={value} value={value}>
-                      {MODEL_LABELS[value]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <label className="text-sm font-medium" htmlFor="agent-temp">
-                    温度
-                  </label>
-                  <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                    {formatTemp(temperature)}
-                  </span>
-                </div>
-                <Slider
-                  id="agent-temp"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={[temperature]}
-                  onValueChange={(v) =>
-                    setTemperature(clamp(v[0] ?? 0.7, 0, 1))
-                  }
-                />
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>0.0 确定性</span>
-                  <span>1.0 创造性</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium">显式工具集成</div>
-                  <div className="text-xs text-muted-foreground">
-                    绑定/解绑真实世界执行权限（邮件、Webhook、代理等）。
-                  </div>
-                </div>
-                <span className="inline-flex rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                  已选 {selectedToolIds.size} 项
-                </span>
-              </div>
-
-              {explicitTools.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4 text-sm text-muted-foreground">
-                  暂无可用显式工具。请先创建工具，再返回此处授予智能体权限。
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {explicitTools.map((tool) => {
-                    const checked = selectedToolIds.has(tool.id);
-                    return (
-                      <label
-                        key={tool.id}
-                        className={cn(
-                          "flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition-colors",
-                          checked
-                            ? "border-primary bg-primary/10 ring-1 ring-primary/20"
-                            : "hover:bg-primary/5",
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleTool(tool.id)}
-                          className="mt-1 h-4 w-4 accent-primary"
-                        />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="truncate text-sm font-semibold">
-                              {toolLabel(tool)}
-                            </div>
-                            <span className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                              显式
-                            </span>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {tool.description?.trim()
-                              ? tool.description
-                              : "暂无描述。"}
-                          </div>
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <DialogFooter className="items-center justify-between sm:justify-between">
-            <div className="mr-auto text-xs text-muted-foreground">
-              隐式工具始终启用，不会在此显示。
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" onClick={closeDialog} disabled={saving}>
-                取消
-              </Button>
-              <Button onClick={() => void upsertAgent()} disabled={saving}>
-                {saving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    保存中
-                  </>
-                ) : editingAgentId ? (
-                  "保存更改"
-                ) : (
-                  "创建智能体"
-                )}
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AgentEditorDialog
+        open={editorOpen}
+        agent={editingAgent}
+        explicitTools={explicitTools}
+        onOpenChange={setEditorOpen}
+        onSaved={() => loadAll({ silent: true })}
+        onError={setError}
+      />
+    </div>
     </div>
   );
 }

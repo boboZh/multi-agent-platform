@@ -151,7 +151,7 @@ export default function WorkflowCanvas() {
   );
 
   return (
-    <div className="border-2 border-amber-800 flex-1 h-full">
+    <div className="flex min-h-0 flex-1 flex-col">
       <ReactFlow
         nodes={nodes}
         edges={edges}
