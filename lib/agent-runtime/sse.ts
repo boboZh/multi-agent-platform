@@ -8,7 +8,7 @@ export type ChatSseEvent =
 export function encodeSse(event: ChatSseEvent) {
   return `data: ${JSON.stringify(event)}\n\n`;
 }
-
+// 解析流式响应
 export function extractStreamText(chunk: unknown): string {
   if (chunk == null) return "";
   if (typeof chunk === "string") return chunk;
@@ -30,7 +30,7 @@ export function extractStreamText(chunk: unknown): string {
     })
     .join("");
 }
-
+// 自定义协议头，用于前端解析
 export function mapStreamEvent(event: {
   event?: string;
   name?: string;

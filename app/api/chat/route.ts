@@ -127,6 +127,7 @@ export async function POST(request: Request) {
 
         for await (const raw of eventStream) {
           const mapped = mapStreamEvent(raw);
+          console.log("mapped: ", mapped);
           if (mapped) send(mapped);
         }
 

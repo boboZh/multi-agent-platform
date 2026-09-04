@@ -1,4 +1,4 @@
-// init-tools.js
+// 初始化tools数据表
 require("dotenv").config({ path: ".env.local" }); // 加载 Next.js 的本地环境变量
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
@@ -18,7 +18,7 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // 2. 核心：使用我们之前约定的合法 UUID 作为测试用户的 ID
-const TEST_USER_ID = process.env.MOCK_USER_ID;
+const TEST_USER_ID = process.env.NEXT_PUBLIC_MOCK_USER_ID;
 
 // 3. 定义要注入的工具数据
 // 注意：字段必须严格对齐你数据库表 tools 的字段 (user_id, name, display_name, description, tool_type, connection_config)
