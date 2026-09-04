@@ -11,16 +11,21 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import {
+  AgentTrialEditor,
+  draftFromAgent,
+  draftsEqual,
+  type AgentDraft,
+} from "../agent-trial-editor";
 import type {
   AgentRow,
   AgentToolRow,
   AgentWithTools,
   ToolRow,
 } from "../types";
-import { clamp, formatTemp, modelLabel, toolLabel } from "../utils";
+import { getErrorMessage } from "../utils";
 import type { ChatSseEvent } from "@/lib/agent-runtime/sse";
 
 type PlaygroundMessage = {
@@ -63,8 +68,13 @@ export default function AgentDetailPage({
 }) {
   const { id } = use(params);
   const [agent, setAgent] = useState<AgentWithTools | null>(null);
+  const [availableTools, setAvailableTools] = useState<ToolRow[]>([]);
+  const [draft, setDraft] = useState<AgentDraft | null>(null);
+  const [savedDraft, setSavedDraft] = useState<AgentDraft | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<PlaygroundMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -98,24 +108,29 @@ export default function AgentDetailPage({
         return;
       }
 
+      const { data: allTools } = await supabase
+        .from("tools")
+        .select(
+          "id,user_id,name,display_name,description,tool_type,connection_config",
+        )
+        .eq("user_id", agentRow.user_id)
+        .eq("tool_type", "explicit")
+        .order("display_name", { ascending: true });
+
       const { data: links } = await supabase
         .from("agent_tools")
         .select("id,agent_id,tool_id")
         .eq("agent_id", id);
       const toolIds = ((links || []) as AgentToolRow[]).map((l) => l.tool_id);
-      let tools: ToolRow[] = [];
-      if (toolIds.length > 0) {
-        const { data: toolRows } = await supabase
-          .from("tools")
-          .select(
-            "id,user_id,name,display_name,description,tool_type,connection_config",
-          )
-          .in("id", toolIds)
-          .eq("tool_type", "explicit");
-        tools = (toolRows || []) as ToolRow[];
-      }
+      const catalog = (allTools || []) as ToolRow[];
+      const bound = catalog.filter((tool) => toolIds.includes(tool.id));
       if (cancelled) return;
-      setAgent({ ...agentRow, explicitTools: tools });
+      const hydrated = { ...agentRow, explicitTools: bound };
+      const nextDraft = draftFromAgent(hydrated);
+      setAvailableTools(catalog);
+      setAgent(hydrated);
+      setDraft(nextDraft);
+      setSavedDraft(nextDraft);
       setLoading(false);
     }
     void load();
@@ -139,7 +154,7 @@ export default function AgentDetailPage({
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || streaming || !agent) return;
+    if (!text || streaming || !agent || !draft) return;
 
     const userMsg: PlaygroundMessage = {
       id: crypto.randomUUID(),
@@ -166,6 +181,12 @@ export default function AgentDetailPage({
         body: JSON.stringify({
           agentId: agent.id,
           messages: [...historyPayload, { role: "user", content: text }],
+          config: {
+            system_prompt: draft.systemPrompt,
+            model_name: draft.modelName,
+            temperature: draft.temperature,
+            toolIds: draft.selectedToolIds,
+          },
         }),
       });
 
@@ -266,9 +287,73 @@ export default function AgentDetailPage({
     if (event.type === "error") setError(event.message);
   }
 
+  const dirty = Boolean(draft && savedDraft && !draftsEqual(draft, savedDraft));
+
+  async function saveDraft() {
+    if (!agent || !draft || saving) return;
+    const trimmedName = draft.name.trim();
+    if (!trimmedName) {
+      setSaveMessage("智能体名称为必填项。");
+      return;
+    }
+    setSaving(true);
+    setSaveMessage(null);
+    try {
+      const userId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
+      const { error: updErr } = await supabase
+        .from("agents")
+        .update({
+          name: trimmedName,
+          system_prompt: draft.systemPrompt.trim(),
+          model_name: draft.modelName,
+          temperature: draft.temperature,
+        })
+        .eq("id", agent.id)
+        .eq("user_id", userId);
+      if (updErr) throw updErr;
+
+      const { error: delErr } = await supabase
+        .from("agent_tools")
+        .delete()
+        .eq("agent_id", agent.id);
+      if (delErr) throw delErr;
+
+      if (draft.selectedToolIds.length > 0) {
+        const { error: bindErr } = await supabase.from("agent_tools").insert(
+          draft.selectedToolIds.map((tool_id) => ({
+            agent_id: agent.id,
+            tool_id,
+          })),
+        );
+        if (bindErr) throw bindErr;
+      }
+
+      const bound = availableTools.filter((tool) =>
+        draft.selectedToolIds.includes(tool.id),
+      );
+      const nextAgent = {
+        ...agent,
+        name: trimmedName,
+        system_prompt: draft.systemPrompt.trim(),
+        model_name: draft.modelName,
+        temperature: draft.temperature,
+        explicitTools: bound,
+      };
+      const nextDraft = draftFromAgent(nextAgent);
+      setAgent(nextAgent);
+      setDraft(nextDraft);
+      setSavedDraft(nextDraft);
+      setSaveMessage("已保存。");
+    } catch (e: unknown) {
+      setSaveMessage(getErrorMessage(e) ?? "保存失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside className="flex w-[320px] shrink-0 flex-col border-r bg-card">
+      <aside className="flex w-[360px] shrink-0 flex-col border-r bg-card">
         <div className="flex items-center gap-2 border-b p-4">
           <Button variant="ghost" size="icon-sm" asChild>
             <Link href="/agents" aria-label="返回目录">
@@ -277,69 +362,48 @@ export default function AgentDetailPage({
           </Button>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">
-              {loading ? "加载中…" : agent?.name || "智能体详情"}
+              {loading ? "加载中…" : draft?.name || agent?.name || "智能体详情"}
             </div>
-            <div className="text-xs text-muted-foreground">单体试运行</div>
+            <div className="text-xs text-muted-foreground">
+              {dirty ? "试运行草稿（未保存）" : "编辑并试运行"}
+            </div>
           </div>
         </div>
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
-          {agent ? (
-            <>
-              <Card size="sm">
-                <CardHeader>
-                  <CardTitle>模型</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div className="inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                    {modelLabel(agent.model_name)}
-                  </div>
-                  <div className="text-muted-foreground">
-                    温度 {formatTemp(clamp(agent.temperature ?? 0.7, 0, 1))}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card size="sm">
-                <CardHeader>
-                  <CardTitle>系统提示词</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                    {agent.system_prompt?.trim() || "未设置系统提示词。"}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card size="sm">
-                <CardHeader>
-                  <CardTitle>显式工具</CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-wrap gap-2">
-                  {agent.explicitTools.length === 0 ? (
-                    <span className="text-sm text-muted-foreground">
-                      未绑定显式工具
-                    </span>
-                  ) : (
-                    agent.explicitTools.map((tool) => (
-                      <span
-                        key={tool.id}
-                        className="inline-flex items-center gap-1 rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary"
-                      >
-                        <Wrench className="h-3 w-3" />
-                        {toolLabel(tool)}
-                      </span>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
-            </>
-          ) : loading ? (
-            <div className="animate-pulse space-y-3">
-              <div className="h-24 rounded-xl bg-muted" />
-              <div className="h-40 rounded-xl bg-muted" />
-            </div>
-          ) : (
-            <p className="text-sm text-destructive">{error}</p>
-          )}
-        </div>
+        {draft && agent ? (
+          <>
+            {saveMessage ? (
+              <div
+                className={cn(
+                  "px-4 pt-3 text-xs",
+                  saveMessage === "已保存。"
+                    ? "text-muted-foreground"
+                    : "text-destructive",
+                )}
+              >
+                {saveMessage}
+              </div>
+            ) : null}
+            <AgentTrialEditor
+              draft={draft}
+              availableTools={availableTools}
+              dirty={dirty}
+              saving={saving}
+              disabled={streaming}
+              onChange={(patch) => {
+                setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+                setSaveMessage(null);
+              }}
+              onSave={() => void saveDraft()}
+            />
+          </>
+        ) : loading ? (
+          <div className="animate-pulse space-y-3 p-4">
+            <div className="h-24 rounded-xl bg-muted" />
+            <div className="h-40 rounded-xl bg-muted" />
+          </div>
+        ) : (
+          <p className="p-4 text-sm text-destructive">{error}</p>
+        )}
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col bg-background">
@@ -350,7 +414,7 @@ export default function AgentDetailPage({
           <div>
             <div className="text-sm font-medium">流式对话</div>
             <div className="text-xs text-muted-foreground">
-              使用 fetch + ReadableStream 接收 SSE
+              发送时使用左侧当前参数，不自动保存
             </div>
           </div>
         </div>
@@ -423,7 +487,7 @@ export default function AgentDetailPage({
               onChange={(e) => setInput(e.target.value)}
               placeholder="输入试运行消息…"
               rows={3}
-              disabled={streaming || !agent}
+              disabled={streaming || !agent || !draft}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -431,7 +495,7 @@ export default function AgentDetailPage({
                 }
               }}
             />
-            <Button type="submit" disabled={streaming || !agent || !input.trim()}>
+            <Button type="submit" disabled={streaming || !agent || !draft || !input.trim()}>
               {streaming ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (

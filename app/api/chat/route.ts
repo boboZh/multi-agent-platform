@@ -12,6 +12,12 @@ export const maxDuration = 60;
 type ChatRequestBody = {
   agentId?: string;
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
+  config?: {
+    system_prompt?: string;
+    model_name?: string;
+    temperature?: number;
+    toolIds?: string[];
+  };
 };
 
 function sseResponse(stream: ReadableStream<Uint8Array>) {
@@ -59,12 +65,22 @@ export async function POST(request: Request) {
   }
 
   const agentRow = agent as AgentRow;
-  const { data: links } = await supabase
-    .from("agent_tools")
-    .select("id,agent_id,tool_id")
-    .eq("agent_id", agentId);
+  const override = body.config;
+  const modelName = override?.model_name ?? agentRow.model_name;
+  const temperature = override?.temperature ?? agentRow.temperature;
+  const systemPrompt = override?.system_prompt ?? agentRow.system_prompt;
 
-  const toolIds = ((links || []) as AgentToolRow[]).map((l) => l.tool_id);
+  let toolIds: string[];
+  if (override?.toolIds) {
+    toolIds = override.toolIds;
+  } else {
+    const { data: links } = await supabase
+      .from("agent_tools")
+      .select("id,agent_id,tool_id")
+      .eq("agent_id", agentId);
+    toolIds = ((links || []) as AgentToolRow[]).map((l) => l.tool_id);
+  }
+
   let toolRows: ToolRow[] = [];
   if (toolIds.length > 0) {
     const { data: tools } = await supabase
@@ -73,6 +89,7 @@ export async function POST(request: Request) {
         "id,user_id,name,display_name,description,tool_type,connection_config",
       )
       .in("id", toolIds)
+      .eq("user_id", agentRow.user_id)
       .eq("tool_type", "explicit");
     toolRows = (tools || []) as ToolRow[];
   }
@@ -85,15 +102,15 @@ export async function POST(request: Request) {
 
       try {
         const llm = createChatModel(
-          agentRow.model_name,
-          Number(agentRow.temperature ?? 0.7),
+          modelName,
+          Number(temperature ?? 0.7),
         );
         const tools = buildLangChainTools(toolRows);
         const reactAgent = createReactAgent({
           llm,
           tools,
           prompt:
-            agentRow.system_prompt?.trim() ||
+            systemPrompt?.trim() ||
             "You are a helpful AI agent. Use tools when they improve the answer.",
         });
 
