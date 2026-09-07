@@ -31,10 +31,12 @@
 
 **两条契约必须分开：**
 
-| 层 | 谁拥有 | 内容 |
-| --- | --- | --- |
-| **Document（持久化 DSL）** | 前端提交、后端校验后原样入库 | ReactFlow `nodes`/`edges` + 语义配置 `data.config` |
-| **IR / Graph（运行时）** | 仅后端内存（可选缓存哈希） | LangGraph 节点函数、`addConditionalEdges`、`interrupt` |
+
+| 层                     | 谁拥有            | 内容                                               |
+| --------------------- | -------------- | ------------------------------------------------ |
+| **Document（持久化 DSL）** | 前端提交、后端校验后原样入库 | ReactFlow `nodes`/`edges` + 语义配置 `data.config`   |
+| **IR / Graph（运行时）**   | 仅后端内存（可选缓存哈希）  | LangGraph 节点函数、`addConditionalEdges`、`interrupt` |
+
 
 不要把编译后的 JS 函数或 LangGraph 对象塞进 `flow_data`。Document 必须可 round-trip 回画布。
 
@@ -42,7 +44,11 @@
 
 ---
 
+
+
 ## 1. 数据库表设计（Supabase）
+
+
 
 ### 1.1 演进现有 `flows`（定义 / 元数据）
 
@@ -62,16 +68,18 @@ alter table public.flows
 -- update public.flows set dsl = flow_data where dsl = '{}'::jsonb;
 ```
 
-| 字段 | 说明 |
-| --- | --- |
-| `id` | 工作流定义 ID |
-| `user_id` | 与 `agents.user_id` 对齐；列表/编辑按用户隔离 |
-| `name` / `description` | 列表展示，避免只打开 JSON 才知道含义 |
-| `status` | draft 可随便改；published 才允许正式 run（Phase 2/3） |
-| `version` | 每次「发布」+1；编辑中可只更新 `dsl` 不升版本 |
-| `dsl` | **唯一真相**：下文 Workflow Document |
-| `flow_data` | 兼容旧 Demo；稳定后可废弃 |
-| `created_at` / `updated_at` | `updated_at` 用 trigger 维护 |
+
+| 字段                          | 说明                                        |
+| --------------------------- | ----------------------------------------- |
+| `id`                        | 工作流定义 ID                                  |
+| `user_id`                   | 与 `agents.user_id` 对齐；列表/编辑按用户隔离          |
+| `name` / `description`      | 列表展示，避免只打开 JSON 才知道含义                     |
+| `status`                    | draft 可随便改；published 才允许正式 run（Phase 2/3） |
+| `version`                   | 每次「发布」+1；编辑中可只更新 `dsl` 不升版本               |
+| `dsl`                       | **唯一真相**：下文 Workflow Document             |
+| `flow_data`                 | 兼容旧 Demo；稳定后可废弃                           |
+| `created_at` / `updated_at` | `updated_at` 用 trigger 维护                 |
+
 
 可选：`entry_node_id text` 冗余，便于列表校验「是否有 Start」。仍以 `dsl` 内 `startNodeId` 为准。
 
@@ -91,6 +99,8 @@ create table public.flow_versions (
   unique (flow_id, version)
 );
 ```
+
+
 
 ### 1.3 `flow_runs`（一次执行 / 一次 thread，Phase 3）
 
@@ -128,14 +138,20 @@ CRUD 建议：列表/保存可继续用浏览器 `lib/supabase.ts`（与 Agents 
 
 ---
 
+
+
 ## 2. 前后端通信 DSL
+
+
 
 ### 2.1 设计原则
 
 1. **ReactFlow 原生存储**：`id`、`position`、`source`/`target`/`sourceHandle` 直接可喂给 `useNodesState` / `useEdgesState`。
-2. **语义进 `data`**：`kind`、`config`、`ui` 分层；不要把 prompt 写在 `style` 里。
-3. **边表达控制流**：条件出口 = 节点上的 named Handle `id`，边用 `sourceHandle` 对齐 `config.branches[].key`。编译器 **禁止**靠边的 `label` 字符串做分支。
+2. **语义进** `data`：`kind`、`config`、`ui` 分层；不要把 prompt 写在 `style` 里。ReactFlow允许每个节点塞一个`data`对象来存放自定义数据，`data`中的数据做好“抽屉分类”：`kind`决定后端编译逻辑（Agent还是条件判断等等）、`config`存放后端执行参数（如大模型的temperature等）、`ui`存放纯前端视觉配置（如节点颜色等）
+3. **边表达控制流**：条件出口 = 节点上的 named Handle `id`，边用 `sourceHandle` 对齐 `config.branches[].key`。编译器 **禁止**使用边的 `label` 字符串做分支。
 4. **版本字段**：根上 `schemaVersion`，编译器按版本解析，避免静默破坏。
+
+
 
 ### 2.2 Document JSON Schema 示例
 
@@ -276,18 +292,22 @@ CRUD 建议：列表/保存可继续用浏览器 `lib/supabase.ts`（与 Agents 
 - 禁止悬空边；允许环（Agent ↔ Tool），编译器按 LangGraph 正常成环。
 - 节点 `id` 建议 `[a-zA-Z_][a-zA-Z0-9_]*`，可直接当 LangGraph 节点名。
 
+
+
 ### 2.3 `kind` 一览（Phase 1–3）
 
-| `data.kind` | 画布 `type` | 编译行为 |
-| --- | --- | --- |
-| `start` | `startNode` | 入口，写入 `input` → `state` |
-| `end` | `endNode` | 接到 `END` |
-| `agent` | `agentNode` | 加载 `agents` + tools，调用与 chat 相同的模型绑定 |
-| `tool` | `toolNode` | 单次结构化 tool 调用（可选，Phase 2） |
-| `condition` | `conditionNode` | `addConditionalEdges`；`expression` 或 `llm` |
+
+| `data.kind`    | 画布 `type`       | 编译行为                                               |
+| -------------- | --------------- | -------------------------------------------------- |
+| `start`        | `startNode`     | 入口，写入 `input` → `state`                            |
+| `end`          | `endNode`       | 接到 `END`                                           |
+| `agent`        | `agentNode`     | 加载 `agents` + tools，调用与 chat 相同的模型绑定               |
+| `tool`         | `toolNode`      | 单次结构化 tool 调用（可选，Phase 2）                          |
+| `condition`    | `conditionNode` | `addConditionalEdges`；`expression` 或 `llm`         |
 | `human_review` | `interruptNode` | 节点内 `interrupt(payload)`，resume 合并表单到 `state.vars` |
 
-表达式求值：**白名单**（`state.vars` / `state.lastAgentText` 上的比较、布尔），不要 `eval` 任意 JS。LLM 判定：输出必须是 `branches` 中的 key，否则走 `defaultBranch`。
+
+表达式求值：**白名单**（`state.vars` / `state.lastAgentText` 上的比较、布尔），不要 `eval` 任意 JS，杜绝注入隐患。LLM 判定：输出必须是 `branches` 中的 key，否则走 `defaultBranch`。
 
 ### 2.4 共享 State（编译器固定 Annotation）
 
@@ -307,17 +327,21 @@ CRUD 建议：列表/保存可继续用浏览器 `lib/supabase.ts`（与 Agents 
 
 ### 2.5 API 契约（建议）
 
-| 方法 | 路径 | 作用 |
-| --- | --- | --- |
-| CRUD | Supabase `flows` 或 `GET/POST/PATCH /api/workflows` | 列表、创建、保存 `dsl` |
-| `POST` | `/api/workflows/:id/validate` | Zod 校验 + 编译 dry-run（不 invoke LLM） |
-| `POST` | `/api/workflows/:id/run` | 发布版本上 `stream` / `invoke` |
-| `POST` | `/api/workflows/runs/:runId/resume` | `Command({ resume })` |
-| `GET` | `/api/workflows/runs/:runId` | 状态、`interrupt_payload`、checkpoint 摘要 |
+
+| 方法     | 路径                                                 | 作用                                   |
+| ------ | -------------------------------------------------- | ------------------------------------ |
+| CRUD   | Supabase `flows` 或 `GET/POST/PATCH /api/workflows` | 列表、创建、保存 `dsl`                       |
+| `POST` | `/api/workflows/:id/validate`                      | Zod 校验 + 编译 dry-run（不 invoke LLM）    |
+| `POST` | `/api/workflows/:id/run`                           | 发布版本上 `stream` / `invoke`            |
+| `POST` | `/api/workflows/runs/:runId/resume`                | `Command({ resume })`                |
+| `GET`  | `/api/workflows/runs/:runId`                       | 状态、`interrupt_payload`、checkpoint 摘要 |
+
 
 保存接口只收 Document；validate/run 返回 `{ ok, errors[], graphSummary? }`，错误带 `nodeId` 方便画布高亮。
 
 ---
+
+
 
 ## 3. 前端模块拆解
 
@@ -339,6 +363,8 @@ lib/workflow-dsl/
   kinds.ts
 ```
 
+
+
 ### 3.1 画布（Canvas）
 
 - 继续用现有 `reactflow@11`（不必此时升级 `@xyflow/react`）。
@@ -353,12 +379,16 @@ lib/workflow-dsl/
 
 每个节点组件只展示：`label`、`kind` 图标、校验错误点、Handles。选中态用 ReactFlow `selected` + 左边框。
 
-| 组件 | Handles |
-| --- | --- |
-| Start | source ×1 |
-| End | target ×1 |
-| Agent / Tool / Review | target ×1，source ×1 |
-| Condition | target ×1，source × N（`id = branch.key`） |
+
+| 组件                    | Handles                                 |
+| --------------------- | --------------------------------------- |
+| Start                 | source ×1                               |
+| End                   | target ×1                               |
+| Agent / Tool / Review | target ×1，source ×1                     |
+| Condition             | target ×1，source × N（`id = branch.key`） |
+
+
+
 
 ### 3.3 右侧 Drawer 与状态
 
@@ -377,7 +407,7 @@ dirty / saving
 validationErrors: { nodeId, message }[]
 ```
 
-更新配置：**只改 `node.data.config`（不可变更新）**，Canvas 从同一 `document.nodes` 来。条件分支增删必须同时改 `config.branches` 与 `edges`。
+更新配置：**只改** `node.data.config`**（不可变更新）**，Canvas 从同一 `document.nodes` 来。条件分支增删必须同时改 `config.branches` 与 `edges`。
 
 Drawer 按 `kind` 切换表单：Agent 选择器（拉 `agents` 表）、condition 的 mode/expression/branches、review 的 formFields。边 Drawer：只读 source/target，可编辑 `label`（展示用），`branchKey` 与 Handle 锁定同步。
 
@@ -387,6 +417,8 @@ Drawer 按 `kind` 切换表单：Agent 选择器（拉 `agents` 表）、conditi
 - `/workflows/[id]`：全高编辑器（layout 已是 `h-screen`）。顶栏：返回、名称、保存、校验、（Phase 3）试运行。
 
 ---
+
+
 
 ## 4. 后端 DSL → LangGraph 编译器
 
@@ -423,10 +455,14 @@ Resume：`graph.stream(new Command({ resume: { decision, comment } }), { configu
 
 - **end**：接到 `END`；可把 `state` 摘要写入 `flow_runs.output`。
 
+
+
 ### 4.3 边
 
 - 无 `sourceHandle`：`addEdge(source, target)`。
 - 条件节点：`addConditionalEdges(source, (s) => s._route ?? defaultBranch, { yes: 'n_review', no: 'n_end' })`。map 的 key 来自 `branches`，value 来自对应边的 `target`。
+
+
 
 ### 4.4 单步调试（为 Phase 3 预留）
 
@@ -434,19 +470,27 @@ Resume：`graph.stream(new Command({ resume: { decision, comment } }), { configu
 - API 可提供 `stopAfter: nodeId`：编译时给目标节点包一层，执行完 `interrupt({ debug: true })`，前端高亮当前节点。
 - 不要为调试另存一套 DSL。
 
+
+
 ### 4.5 与现有 Chat 的关系
 
-| | 单 Agent Chat | Workflow |
-| --- | --- | --- |
-| 图 | `createReactAgent` 预置 | 用户 DSL 编译 |
-| 记忆 | Redis thread per agent | Redis thread per `flow_run` |
-| 配置 | Agent 行 + 可选覆盖 | 节点上 `agentId` 指向 Agent 行 |
+
+|     | 单 Agent Chat           | Workflow                    |
+| --- | ---------------------- | --------------------------- |
+| 图   | `createReactAgent` 预置  | 用户 DSL 编译                   |
+| 记忆  | Redis thread per agent | Redis thread per `flow_run` |
+| 配置  | Agent 行 + 可选覆盖         | 节点上 `agentId` 指向 Agent 行    |
+
 
 共享 `llm.ts` / `tools.ts` / `getRedisCheckpointer()`，不要分叉模型工厂。
 
 ---
 
+
+
 ## 5. 分阶段落地
+
+
 
 ### Phase 1 — 可编辑、可保存（CRUD + 画布 + Drawer）
 
@@ -491,13 +535,17 @@ Resume：`graph.stream(new Command({ resume: { decision, comment } }), { configu
 
 ---
 
+
+
 ## 6. 与当前代码的衔接
 
-| 现有 | 用法 |
-| --- | --- |
-| `workflows/page.tsx` Demo | 拆成列表；画布迁到 `[id]` |
-| `agents` CRUD / Drawer | 列表与 Inspector 交互参考 |
+
+| 现有                              | 用法                         |
+| ------------------------------- | -------------------------- |
+| `workflows/page.tsx` Demo       | 拆成列表；画布迁到 `[id]`           |
+| `agents` CRUD / Drawer          | 列表与 Inspector 交互参考         |
 | `createReactAgent` + RedisSaver | Agent 节点与 run 的 checkpoint |
-| `flows.flow_data` | 一次性迁到 `dsl` |
+| `flows.flow_data`               | 一次性迁到 `dsl`                |
+
 
 实施顺序：**先 schema + 表演进 → 再编辑器持久化 → 再编译器 → 最后 run/resume**。每阶段都要有可演示的 UI 或 API，避免只堆 DSL 类型。

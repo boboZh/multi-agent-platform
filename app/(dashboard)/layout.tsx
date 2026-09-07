@@ -3,7 +3,14 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, GitBranch, Database, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import {
+  Bot,
+  GitBranch,
+  Database,
+  PanelLeftClose,
+  PanelLeftOpen,
+  FlipHorizontal,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -26,6 +33,11 @@ export default function DashboardLayout({
       href: "/workflows",
       icon: <GitBranch size={18} />,
     },
+    {
+      name: "flow-demo",
+      href: "/flowDemo",
+      icon: <FlipHorizontal size={18} />,
+    },
   ];
 
   return (
@@ -36,11 +48,18 @@ export default function DashboardLayout({
           sidebarExpanded ? "w-64 p-4" : "w-16 items-center px-2 py-3",
         )}
       >
-        <div className={cn("flex flex-col", sidebarExpanded ? "space-y-6" : "items-center gap-3")}>
+        <div
+          className={cn(
+            "flex flex-col",
+            sidebarExpanded ? "space-y-6" : "items-center gap-3",
+          )}
+        >
           <div
             className={cn(
               "flex items-center border-b border-zinc-100",
-              sidebarExpanded ? "gap-2 px-2 py-1.5 pb-4" : "flex-col gap-2 pb-3",
+              sidebarExpanded
+                ? "gap-2 px-2 py-1.5 pb-4"
+                : "flex-col gap-2 pb-3",
             )}
           >
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-xs font-bold text-white">
@@ -66,9 +85,15 @@ export default function DashboardLayout({
             </Button>
           </div>
 
-          <nav className={cn("space-y-1", !sidebarExpanded && "flex flex-col items-center")}>
+          <nav
+            className={cn(
+              "space-y-1",
+              !sidebarExpanded && "flex flex-col items-center",
+            )}
+          >
             {menuItems.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const active =
+                pathname === item.href || pathname.startsWith(`${item.href}/`);
               return (
                 <Link
                   key={item.href}
