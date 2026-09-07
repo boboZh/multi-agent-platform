@@ -6,7 +6,9 @@ import {
   ArrowLeft,
   Bot,
   Loader2,
+  MessageSquarePlus,
   Send,
+  SlidersHorizontal,
   Wrench,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -19,36 +21,26 @@ import {
   draftsEqual,
   type AgentDraft,
 } from "../agent-trial-editor";
-import type {
-  AgentRow,
-  AgentToolRow,
-  AgentWithTools,
-  ToolRow,
-} from "../types";
+import type { AgentRow, AgentToolRow, AgentWithTools, ToolRow } from "../types";
 import { getErrorMessage } from "../utils";
+import { ChatMarkdown } from "../chat-markdown";
 import type { ChatSseEvent } from "@/lib/agent-runtime/sse";
-
-type PlaygroundMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  tools: Array<{
-    runId: string;
-    name: string;
-    status: "running" | "done";
-    input?: unknown;
-    output?: unknown;
-  }>;
-};
+import { ThreadList } from "../thread-list";
+import { ThreadConfigDrawer } from "../thread-config-drawer";
+import {
+  createEmptyThread,
+  threadFromStored,
+  type ConversationThread,
+  type PlaygroundMessage,
+  type StoredThreadListItem,
+} from "../thread-types";
 
 function parseSseChunk(buffer: string) {
   const frames = buffer.split("\n\n");
   const rest = frames.pop() ?? "";
   const events: ChatSseEvent[] = [];
   for (const frame of frames) {
-    const dataLine = frame
-      .split("\n")
-      .find((line) => line.startsWith("data:"));
+    const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
     if (!dataLine) continue;
     const json = dataLine.replace(/^data:\s?/, "").trim();
     if (!json) continue;
@@ -59,6 +51,16 @@ function parseSseChunk(buffer: string) {
     }
   }
   return { events, rest };
+}
+
+function cloneDraft(draft: AgentDraft): AgentDraft {
+  return { ...draft, selectedToolIds: [...draft.selectedToolIds] };
+}
+
+function titleFromText(text: string) {
+  const compact = text.replaceAll(/\s+/g, " ").trim();
+  if (!compact) return "新对话";
+  return compact.length <= 24 ? compact : `${compact.slice(0, 23)}…`;
 }
 
 export default function AgentDetailPage({
@@ -76,9 +78,19 @@ export default function AgentDetailPage({
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<PlaygroundMessage[]>([]);
+  const [threads, setThreads] = useState<ConversationThread[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(true);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.threadId === activeThreadId) ?? null,
+    [threads, activeThreadId],
+  );
+  const messages = useMemo(() => activeThread?.messages ?? [], [activeThread]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +110,7 @@ export default function AgentDetailPage({
         setError("未找到该智能体。");
         setAgent(null);
         setLoading(false);
+        setThreadsLoading(false);
         return;
       }
       const agentRow = row as AgentRow;
@@ -105,6 +118,7 @@ export default function AgentDetailPage({
         setError("未找到该智能体。");
         setAgent(null);
         setLoading(false);
+        setThreadsLoading(false);
         return;
       }
 
@@ -127,11 +141,45 @@ export default function AgentDetailPage({
       if (cancelled) return;
       const hydrated = { ...agentRow, explicitTools: bound };
       const nextDraft = draftFromAgent(hydrated);
+      const fresh = createEmptyThread(nextDraft);
       setAvailableTools(catalog);
       setAgent(hydrated);
       setDraft(nextDraft);
       setSavedDraft(nextDraft);
+      setThreads([fresh]);
+      setActiveThreadId(fresh.threadId);
       setLoading(false);
+
+      let remote: ConversationThread[] = [];
+      setThreadsLoading(true);
+      try {
+        const threadsRes = await fetch(
+          `/api/chat/threads?agentId=${encodeURIComponent(id)}`,
+        );
+        if (cancelled) return;
+        if (!threadsRes.ok) {
+          const errText = await threadsRes.text();
+          throw new Error(errText || `加载对话列表失败 (${threadsRes.status})`);
+        }
+        const payload = (await threadsRes.json()) as {
+          conversations?: StoredThreadListItem[];
+        };
+        remote = (payload.conversations ?? []).map(threadFromStored);
+      } catch (e: unknown) {
+        if (cancelled) return;
+        setError(getErrorMessage(e) ?? "加载对话列表失败。");
+        setThreadsLoading(false);
+        return;
+      }
+
+      if (cancelled) return;
+      setThreads((prev) => {
+        const local = prev.filter((thread) => !thread.persisted);
+        const keepLocal =
+          local.length > 0 ? local : [createEmptyThread(nextDraft)];
+        return [...keepLocal, ...remote];
+      });
+      setThreadsLoading(false);
     }
     void load();
     return () => {
@@ -143,18 +191,142 @@ export default function AgentDetailPage({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streaming]);
 
-  const historyPayload = useMemo(
-    () =>
-      messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
-    [messages],
-  );
+  function startNewConversation(config = savedDraft) {
+    if (!config || streaming || historyLoading) return;
+    const fresh = createEmptyThread(config);
+    setThreads((prev) => [
+      fresh,
+      ...prev.filter((thread) => thread.persisted),
+    ]);
+    setActiveThreadId(fresh.threadId);
+    setHistoryLoading(false);
+    setError(null);
+    setConfigOpen(false);
+  }
+
+  async function selectThread(threadId: string) {
+    if (streaming || historyLoading) return;
+    const thread = threads.find((item) => item.threadId === threadId);
+    setActiveThreadId(threadId);
+    setError(null);
+    setConfigOpen(false);
+    if (!thread?.persisted) return;
+
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(
+        `/api/chat/history?threadId=${encodeURIComponent(threadId)}`,
+      );
+      const payload = (await response.json()) as {
+        messages?: PlaygroundMessage[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || `加载对话历史失败 (${response.status})`);
+      }
+      setThreads((prev) =>
+        prev.map((item) =>
+          item.threadId === threadId
+            ? { ...item, messages: payload.messages ?? [] }
+            : item,
+        ),
+      );
+    } catch (e: unknown) {
+      setError(getErrorMessage(e) ?? "加载对话历史失败。");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  function updateActiveThread(
+    threadId: string,
+    updater: (thread: ConversationThread) => ConversationThread,
+  ) {
+    setThreads((prev) =>
+      prev.map((thread) =>
+        thread.threadId === threadId ? updater(thread) : thread,
+      ),
+    );
+  }
+
+  async function persistAgent(nextDraft: AgentDraft, successText: string) {
+    if (!agent || saving) return null;
+    const trimmedName = nextDraft.name.trim();
+    if (!trimmedName) {
+      setSaveMessage("智能体名称为必填项。");
+      return null;
+    }
+    setSaving(true);
+    setSaveMessage(null);
+    try {
+      const userId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
+      const { error: updErr } = await supabase
+        .from("agents")
+        .update({
+          name: trimmedName,
+          system_prompt: nextDraft.systemPrompt.trim(),
+          model_name: nextDraft.modelName,
+          temperature: nextDraft.temperature,
+        })
+        .eq("id", agent.id)
+        .eq("user_id", userId);
+      if (updErr) throw updErr;
+
+      const { error: delErr } = await supabase
+        .from("agent_tools")
+        .delete()
+        .eq("agent_id", agent.id);
+      if (delErr) throw delErr;
+
+      if (nextDraft.selectedToolIds.length > 0) {
+        const { error: bindErr } = await supabase.from("agent_tools").insert(
+          nextDraft.selectedToolIds.map((tool_id) => ({
+            agent_id: agent.id,
+            tool_id,
+          })),
+        );
+        if (bindErr) throw bindErr;
+      }
+
+      const bound = availableTools.filter((tool) =>
+        nextDraft.selectedToolIds.includes(tool.id),
+      );
+      const nextAgent = {
+        ...agent,
+        name: trimmedName,
+        system_prompt: nextDraft.systemPrompt.trim(),
+        model_name: nextDraft.modelName,
+        temperature: nextDraft.temperature,
+        explicitTools: bound,
+      };
+      const persisted = draftFromAgent(nextAgent);
+      setAgent(nextAgent);
+      setDraft(persisted);
+      setSavedDraft(persisted);
+      setSaveMessage(successText);
+      return persisted;
+    } catch (e: unknown) {
+      setSaveMessage(getErrorMessage(e) ?? "保存失败。");
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || streaming || !agent || !draft) return;
+    if (!text || streaming || !agent || !savedDraft) return;
+
+    let thread = threads.find((item) => item.threadId === activeThreadId);
+    if (!thread) {
+      thread = createEmptyThread(savedDraft);
+      setThreads((prev) => [thread!, ...prev]);
+      setActiveThreadId(thread.threadId);
+    }
+
+    const sendConfig =
+      thread.messages.length === 0 ? cloneDraft(savedDraft) : thread.config;
+    const threadId = thread.threadId;
 
     const userMsg: PlaygroundMessage = {
       id: crypto.randomUUID(),
@@ -172,7 +344,14 @@ export default function AgentDetailPage({
     setInput("");
     setStreaming(true);
     setError(null);
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    updateActiveThread(threadId, (current) => ({
+      ...current,
+      persisted: true,
+      title:
+        current.messages.length === 0 ? titleFromText(text) : current.title,
+      config: sendConfig,
+      messages: [...current.messages, userMsg, assistantMsg],
+    }));
 
     try {
       const response = await fetch("/api/chat", {
@@ -180,12 +359,17 @@ export default function AgentDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agentId: agent.id,
-          messages: [...historyPayload, { role: "user", content: text }],
+          threadId,
+          message: text,
+          title:
+            thread.messages.length === 0
+              ? titleFromText(text)
+              : thread.title,
           config: {
-            system_prompt: draft.systemPrompt,
-            model_name: draft.modelName,
-            temperature: draft.temperature,
-            toolIds: draft.selectedToolIds,
+            system_prompt: sendConfig.systemPrompt,
+            model_name: sendConfig.modelName,
+            temperature: sendConfig.temperature,
+            toolIds: sendConfig.selectedToolIds,
           },
         }),
       });
@@ -206,33 +390,39 @@ export default function AgentDetailPage({
         const parsed = parseSseChunk(buffer);
         buffer = parsed.rest;
         for (const event of parsed.events) {
-          applyEvent(assistantMsg.id, event);
+          applyEvent(threadId, assistantMsg.id, event);
         }
       }
       if (buffer.trim()) {
         const parsed = parseSseChunk(`${buffer}\n\n`);
         for (const event of parsed.events) {
-          applyEvent(assistantMsg.id, event);
+          applyEvent(threadId, assistantMsg.id, event);
         }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "试运行失败";
       setError(message);
-      setMessages((prev) =>
-        prev.map((m) =>
+      updateActiveThread(threadId, (current) => ({
+        ...current,
+        messages: current.messages.map((m) =>
           m.id === assistantMsg.id && !m.content
             ? { ...m, content: `错误：${message}` }
             : m,
         ),
-      );
+      }));
     } finally {
       setStreaming(false);
     }
   }
 
-  function applyEvent(assistantId: string, event: ChatSseEvent) {
-    setMessages((prev) =>
-      prev.map((m) => {
+  function applyEvent(
+    threadId: string,
+    assistantId: string,
+    event: ChatSseEvent,
+  ) {
+    updateActiveThread(threadId, (current) => ({
+      ...current,
+      messages: current.messages.map((m) => {
         if (m.id !== assistantId) return m;
         if (event.type === "token") {
           return { ...m, content: m.content + event.content };
@@ -246,7 +436,7 @@ export default function AgentDetailPage({
               {
                 runId,
                 name: event.name,
-                status: "running",
+                status: "running" as const,
                 input: event.input,
               },
             ],
@@ -269,7 +459,7 @@ export default function AgentDetailPage({
                   {
                     runId: runId || crypto.randomUUID(),
                     name: event.name,
-                    status: "done",
+                    status: "done" as const,
                     output: event.output,
                   },
                 ],
@@ -283,71 +473,30 @@ export default function AgentDetailPage({
         }
         return m;
       }),
-    );
+    }));
     if (event.type === "error") setError(event.message);
   }
 
   const dirty = Boolean(draft && savedDraft && !draftsEqual(draft, savedDraft));
 
   async function saveDraft() {
-    if (!agent || !draft || saving) return;
-    const trimmedName = draft.name.trim();
-    if (!trimmedName) {
-      setSaveMessage("智能体名称为必填项。");
-      return;
-    }
-    setSaving(true);
-    setSaveMessage(null);
-    try {
-      const userId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
-      const { error: updErr } = await supabase
-        .from("agents")
-        .update({
-          name: trimmedName,
-          system_prompt: draft.systemPrompt.trim(),
-          model_name: draft.modelName,
-          temperature: draft.temperature,
-        })
-        .eq("id", agent.id)
-        .eq("user_id", userId);
-      if (updErr) throw updErr;
+    if (!draft) return;
+    const persisted = await persistAgent(
+      draft,
+      "已保存。发送消息将使用新参数创建新的对话。",
+    );
+    if (persisted) startNewConversation(persisted);
+  }
 
-      const { error: delErr } = await supabase
-        .from("agent_tools")
-        .delete()
-        .eq("agent_id", agent.id);
-      if (delErr) throw delErr;
-
-      if (draft.selectedToolIds.length > 0) {
-        const { error: bindErr } = await supabase.from("agent_tools").insert(
-          draft.selectedToolIds.map((tool_id) => ({
-            agent_id: agent.id,
-            tool_id,
-          })),
-        );
-        if (bindErr) throw bindErr;
-      }
-
-      const bound = availableTools.filter((tool) =>
-        draft.selectedToolIds.includes(tool.id),
-      );
-      const nextAgent = {
-        ...agent,
-        name: trimmedName,
-        system_prompt: draft.systemPrompt.trim(),
-        model_name: draft.modelName,
-        temperature: draft.temperature,
-        explicitTools: bound,
-      };
-      const nextDraft = draftFromAgent(nextAgent);
-      setAgent(nextAgent);
-      setDraft(nextDraft);
-      setSavedDraft(nextDraft);
-      setSaveMessage("已保存。");
-    } catch (e: unknown) {
-      setSaveMessage(getErrorMessage(e) ?? "保存失败。");
-    } finally {
-      setSaving(false);
+  async function reuseThreadConfig() {
+    if (!activeThread) return;
+    const persisted = await persistAgent(
+      activeThread.config,
+      "已复用该对话参数并保存到智能体。",
+    );
+    if (persisted) {
+      setConfigOpen(false);
+      startNewConversation(persisted);
     }
   }
 
@@ -375,9 +524,9 @@ export default function AgentDetailPage({
               <div
                 className={cn(
                   "px-4 pt-3 text-xs",
-                  saveMessage === "已保存。"
-                    ? "text-muted-foreground"
-                    : "text-destructive",
+                  saveMessage.includes("失败") || saveMessage.includes("必填")
+                    ? "text-destructive"
+                    : "text-muted-foreground",
                 )}
               >
                 {saveMessage}
@@ -406,23 +555,61 @@ export default function AgentDetailPage({
         )}
       </aside>
 
+      <ThreadList
+        threads={threads}
+        activeThreadId={activeThreadId}
+        loading={threadsLoading}
+        disabled={streaming || historyLoading}
+        onSelect={(threadId) => {
+          void selectThread(threadId);
+        }}
+        onNew={() => startNewConversation()}
+      />
+
       <section className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex items-center gap-2 border-b px-5 py-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Bot className="h-4 w-4" />
           </div>
-          <div>
-            <div className="text-sm font-medium">流式对话</div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {activeThread?.title || "流式对话"}
+            </div>
             <div className="text-xs text-muted-foreground">
-              发送时使用左侧当前参数，不自动保存
+              {dirty
+                ? "未保存的修改不会用于发送，仍使用已保存参数"
+                : "每个对话对应独立 thread_id"}
             </div>
           </div>
+          {/* <Button
+            type="button"
+            variant="outline"
+            disabled={streaming || !savedDraft}
+            onClick={() => startNewConversation()}
+          >
+            <MessageSquarePlus className="h-4 w-4" />
+            发起新对话
+          </Button> */}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!activeThread}
+            onClick={() => setConfigOpen(true)}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            配置信息
+          </Button>
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-          {messages.length === 0 ? (
+          {historyLoading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在加载对话历史…
+            </div>
+          ) : messages.length === 0 ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              发送一条消息，试运行该智能体。
+              发送一条消息，使用已保存参数开启该对话。
             </div>
           ) : (
             messages.map((message) => (
@@ -459,10 +646,14 @@ export default function AgentDetailPage({
                       ))}
                     </div>
                   ) : null}
-                  <div className="whitespace-pre-wrap">
-                    {message.content ||
-                      (streaming && message.role === "assistant" ? "…" : "")}
-                  </div>
+                  {message.content ? (
+                    <ChatMarkdown
+                      content={message.content}
+                      variant={message.role}
+                    />
+                  ) : streaming && message.role === "assistant" ? (
+                    <div>…</div>
+                  ) : null}
                 </div>
               </div>
             ))
@@ -487,7 +678,7 @@ export default function AgentDetailPage({
               onChange={(e) => setInput(e.target.value)}
               placeholder="输入试运行消息…"
               rows={3}
-              disabled={streaming || !agent || !draft}
+              disabled={streaming || historyLoading || !agent || !savedDraft}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -495,7 +686,16 @@ export default function AgentDetailPage({
                 }
               }}
             />
-            <Button type="submit" disabled={streaming || !agent || !draft || !input.trim()}>
+            <Button
+              type="submit"
+              disabled={
+                streaming ||
+                historyLoading ||
+                !agent ||
+                !savedDraft ||
+                !input.trim()
+              }
+            >
               {streaming ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -506,6 +706,15 @@ export default function AgentDetailPage({
           </div>
         </form>
       </section>
+
+      <ThreadConfigDrawer
+        open={configOpen}
+        thread={activeThread}
+        availableTools={availableTools}
+        applying={saving}
+        onClose={() => setConfigOpen(false)}
+        onReuse={() => void reuseThreadConfig()}
+      />
     </div>
   );
 }

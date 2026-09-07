@@ -1,16 +1,33 @@
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { createChatModel } from "@/lib/agent-runtime/llm";
-import { encodeSse, mapStreamEvent, type ChatSseEvent } from "@/lib/agent-runtime/sse";
+import {
+  encodeSse,
+  mapStreamEvent,
+  type ChatSseEvent,
+} from "@/lib/agent-runtime/sse";
 import { buildLangChainTools } from "@/lib/agent-runtime/tools";
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
-import type { AgentRow, AgentToolRow, ToolRow } from "@/app/(dashboard)/agents/types";
+import type {
+  AgentRow,
+  AgentToolRow,
+  ToolRow,
+} from "@/app/(dashboard)/agents/types";
+import { getRedisCheckpointer } from "@/lib/redis";
+import {
+  ensureAgentConversation,
+  titleFromMessage,
+} from "@/lib/agent-runtime/conversation-store";
+import { lastWindow, summarizeMessages } from "@/lib/agent-runtime/context";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 type ChatRequestBody = {
   agentId?: string;
+  message: string;
+  threadId: string;
+  title?: string;
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
   config?: {
     system_prompt?: string;
@@ -42,13 +59,15 @@ export async function POST(request: Request) {
   }
 
   const agentId = body.agentId?.trim();
+  const threadId = body.threadId?.trim();
+  const incomingMessage = body.message?.trim();
   const messages = (body.messages ?? []).filter(
     (m) => (m.role === "user" || m.role === "assistant") && m.content.trim(),
   );
 
-  if (!agentId || messages.length === 0) {
+  if (!agentId || !threadId || (!incomingMessage && messages.length === 0)) {
     return Response.json(
-      { error: "agentId and messages are required" },
+      { error: "agentId, threadId and message are required" },
       { status: 400 },
     );
   }
@@ -94,6 +113,26 @@ export async function POST(request: Request) {
     toolRows = (tools || []) as ToolRow[];
   }
 
+  const userText = incomingMessage || messages.at(-1)?.content || "";
+  try {
+    await ensureAgentConversation(agentId, {
+      threadId,
+      title: body.title?.trim() || titleFromMessage(userText),
+      createdAt: new Date().toISOString(),
+      config: {
+        name: agentRow.name,
+        system_prompt: systemPrompt,
+        model_name: modelName,
+        temperature: temperature == null ? null : Number(temperature),
+        toolIds,
+      },
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to persist conversation";
+    return Response.json({ error: message }, { status: 500 });
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: ChatSseEvent) => {
@@ -101,40 +140,67 @@ export async function POST(request: Request) {
       };
 
       try {
-        const llm = createChatModel(
-          modelName,
-          Number(temperature ?? 0.7),
-        );
+        const llm = createChatModel(modelName, Number(temperature ?? 0.7));
         const tools = buildLangChainTools(toolRows);
+        const redisCheckpointer = await getRedisCheckpointer();
+        const basePrompt =
+          systemPrompt?.trim() ||
+          "You are a helpful AI agent. Use tools when they improve the answer.";
+        let cachedSummaryKey = "";
+        let cachedSummary = "";
         const reactAgent = createReactAgent({
           llm,
           tools,
-          prompt:
-            systemPrompt?.trim() ||
-            "You are a helpful AI agent. Use tools when they improve the answer.",
+          checkpointer: redisCheckpointer,
+          prompt: async (state) => {
+            const { older, kept } = lastWindow(state.messages, 2);
+            const summaryKey = String(older.length);
+            if (older.length > 0 && cachedSummaryKey !== summaryKey) {
+              cachedSummary = await summarizeMessages(older);
+              cachedSummaryKey = summaryKey;
+            }
+            const summary = older.length > 0 ? cachedSummary : "";
+            console.log("summary: ", summary);
+            return [
+              new SystemMessage(
+                summary
+                  ? `${basePrompt}\n\n此前对话摘要：\n${summary}`
+                  : basePrompt,
+              ),
+              ...kept,
+            ];
+          },
         });
 
-        const lcMessages = messages.map((m) =>
-          m.role === "assistant"
-            ? new AIMessage(m.content)
-            : new HumanMessage(m.content),
-        );
+        const config = {
+          configurable: {
+            thread_id: threadId,
+          },
+        };
 
+        // 后续改为从redis获取上下文并做动态修剪
+        // const lcMessages = messages.map((m) =>
+        //   m.role === "assistant"
+        //     ? new AIMessage(m.content)
+        //     : new HumanMessage(m.content),
+        // );
+
+        // 不需要再传入历史messages，Langgraph会自动通过threadId去redis抓历史消息，并把这句新的humanMessage append进去
         const eventStream = await reactAgent.streamEvents(
-          { messages: lcMessages },
-          { version: "v2" },
+          { messages: [new HumanMessage(userText)] },
+          { ...config, version: "v2" },
         );
 
         for await (const raw of eventStream) {
           const mapped = mapStreamEvent(raw);
-          console.log("mapped: ", mapped);
           if (mapped) send(mapped);
         }
 
         send({ type: "done" });
+        const state = await reactAgent.getState(config);
+        console.log("state: ", state);
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Agent run failed";
+        const message = err instanceof Error ? err.message : "Agent run failed";
         send({ type: "error", message });
         send({ type: "done" });
       } finally {

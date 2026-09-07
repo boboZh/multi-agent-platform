@@ -222,8 +222,8 @@ export function AgentTrialEditor({
         </Button>
         <p className="mt-2 text-xs text-muted-foreground">
           {dirty
-            ? "当前为试运行草稿，保存后才会写入智能体配置。"
-            : "配置已与已保存版本一致。发送消息会使用左侧当前参数。"}
+            ? "当前为草稿。不保存则发消息仍用原参数；保存后发消息会用新参数开启新对话。"
+            : "配置已与已保存版本一致。新对话会使用这里保存的参数。"}
         </p>
       </div>
     </div>
