@@ -2,6 +2,7 @@ import type { AgentDraft } from "./agent-trial-editor";
 import { MODEL_VALUES } from "./types";
 import { clamp, isModelValue } from "./utils";
 
+// agent试运行单条消息类型
 export type PlaygroundMessage = {
   id: string;
   role: "user" | "assistant";
@@ -14,7 +15,7 @@ export type PlaygroundMessage = {
     output?: unknown;
   }>;
 };
-
+// agent试运行记录列表项
 export type StoredThreadListItem = {
   threadId: string;
   title: string;
@@ -48,7 +49,9 @@ export function createEmptyThread(config: AgentDraft): ConversationThread {
   };
 }
 
-export function threadFromStored(item: StoredThreadListItem): ConversationThread {
+export function threadFromStored(
+  item: StoredThreadListItem,
+): ConversationThread {
   return {
     threadId: item.threadId,
     title: item.title || "未命名对话",

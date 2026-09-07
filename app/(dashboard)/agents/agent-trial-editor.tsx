@@ -23,6 +23,7 @@ export type AgentDraft = {
   selectedToolIds: UUID[];
 };
 
+// 将agent配置转换为草稿+容错
 export function draftFromAgent(agent: {
   name: string;
   system_prompt: string | null;
@@ -41,6 +42,7 @@ export function draftFromAgent(agent: {
   };
 }
 
+// 判断agent配置是否修改过
 export function draftsEqual(a: AgentDraft, b: AgentDraft) {
   const aIds = [...a.selectedToolIds].sort();
   const bIds = [...b.selectedToolIds].sort();
@@ -192,7 +194,9 @@ export function AgentTrialEditor({
                       className="mt-0.5 h-4 w-4 accent-primary"
                     />
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{toolLabel(tool)}</div>
+                      <div className="truncate font-medium">
+                        {toolLabel(tool)}
+                      </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {tool.description?.trim() || "暂无描述"}
                       </div>

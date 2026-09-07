@@ -93,7 +93,7 @@ export default function AgentDetailPage({
   const messages = useMemo(() => activeThread?.messages ?? [], [activeThread]);
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false; // 闭包布尔锁，防止异步操作未完成时组件被卸载
     async function load() {
       setLoading(true);
       setError(null);
@@ -122,7 +122,7 @@ export default function AgentDetailPage({
         return;
       }
 
-      const { data: allTools } = await supabase
+      const { data } = await supabase
         .from("tools")
         .select(
           "id,user_id,name,display_name,description,tool_type,connection_config",
@@ -136,15 +136,16 @@ export default function AgentDetailPage({
         .select("id,agent_id,tool_id")
         .eq("agent_id", id);
       const toolIds = ((links || []) as AgentToolRow[]).map((l) => l.tool_id);
-      const catalog = (allTools || []) as ToolRow[];
-      const bound = catalog.filter((tool) => toolIds.includes(tool.id));
+      const allTools = (data || []) as ToolRow[];
+
+      const bound = allTools.filter((tool) => toolIds.includes(tool.id));
       if (cancelled) return;
       const hydrated = { ...agentRow, explicitTools: bound };
       const nextDraft = draftFromAgent(hydrated);
       const fresh = createEmptyThread(nextDraft);
-      setAvailableTools(catalog);
-      setAgent(hydrated);
-      setDraft(nextDraft);
+      setAvailableTools(allTools);
+      setAgent(hydrated); /*  */
+      setDraft(nextDraft); /*  */
       setSavedDraft(nextDraft);
       setThreads([fresh]);
       setActiveThreadId(fresh.threadId);
@@ -194,10 +195,7 @@ export default function AgentDetailPage({
   function startNewConversation(config = savedDraft) {
     if (!config || streaming || historyLoading) return;
     const fresh = createEmptyThread(config);
-    setThreads((prev) => [
-      fresh,
-      ...prev.filter((thread) => thread.persisted),
-    ]);
+    setThreads((prev) => [fresh, ...prev.filter((thread) => thread.persisted)]);
     setActiveThreadId(fresh.threadId);
     setHistoryLoading(false);
     setError(null);
@@ -222,7 +220,9 @@ export default function AgentDetailPage({
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(payload.error || `加载对话历史失败 (${response.status})`);
+        throw new Error(
+          payload.error || `加载对话历史失败 (${response.status})`,
+        );
       }
       setThreads((prev) =>
         prev.map((item) =>
@@ -362,9 +362,7 @@ export default function AgentDetailPage({
           threadId,
           message: text,
           title:
-            thread.messages.length === 0
-              ? titleFromText(text)
-              : thread.title,
+            thread.messages.length === 0 ? titleFromText(text) : thread.title,
           config: {
             system_prompt: sendConfig.systemPrompt,
             model_name: sendConfig.modelName,

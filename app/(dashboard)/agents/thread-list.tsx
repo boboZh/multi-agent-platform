@@ -50,7 +50,7 @@ export function ThreadList({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading ? (
-          <div className="animate-pulse space-y-2 p-1">
+          <div className="animate-pulse space-y-2 p-1  ">
             <div className="h-12 rounded-xl bg-muted" />
             <div className="h-12 rounded-xl bg-muted" />
             <div className="h-12 rounded-xl bg-muted" />
