@@ -14,6 +14,7 @@ type ThreadConfigDrawerProps = {
   availableTools: ToolRow[];
   applying?: boolean;
   onClose: () => void;
+  /** 把该会话冻结的 config 写回智能体并开新对话，而不是原地改当前 thread（历史轮次必须保持当时参数）。 */
   onReuse: () => void;
 };
 
@@ -37,6 +38,7 @@ export function ThreadConfigDrawer({
   if (!open) return null;
 
   const config = thread?.config;
+  // 用当前工具目录反查名称；快照里只存了 id，工具被删后抽屉就不展示该项，避免画出幽灵工具。
   const boundTools = availableTools.filter((tool) =>
     config?.selectedToolIds.includes(tool.id),
   );

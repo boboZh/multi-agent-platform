@@ -1,5 +1,9 @@
 "use client";
 
+/**
+ * 智能体试运行台：左侧草稿、中栏会话列表、右侧流式对话。
+ * 核心约束：未保存草稿绝不进入 /api/chat；每条 thread 自带冻结 config，互不污染。
+ */
 import { use, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
@@ -35,6 +39,13 @@ import {
   type StoredThreadListItem,
 } from "../thread-types";
 
+/**
+ * 解析 SSE 缓冲。fetch 按字节切片，一帧可能横跨两次 read。
+ *
+ * 入参：`buffer` — 已累计的未完成文本。
+ * 出参：`events` 已完整的 JSON 帧；`rest` 留给下次拼接的半帧。
+ * 步骤：按 `\n\n` 分帧 → 取 `data:` 行 → JSON.parse；坏 JSON 丢弃，避免一条脏事件掐死整段流。
+ */
 function parseSseChunk(buffer: string) {
   const frames = buffer.split("\n\n");
   const rest = frames.pop() ?? "";
@@ -53,10 +64,12 @@ function parseSseChunk(buffer: string) {
   return { events, rest };
 }
 
+/** 冻结一份草稿给 thread.config：selectedToolIds 必须拷贝，否则勾选工具会改写其它会话的快照。 */
 function cloneDraft(draft: AgentDraft): AgentDraft {
   return { ...draft, selectedToolIds: [...draft.selectedToolIds] };
 }
 
+/** 用首条用户消息生成侧栏标题；压空白后截断，避免超长 prompt 撑爆 240px 列表。 */
 function titleFromText(text: string) {
   const compact = text.replaceAll(/\s+/g, " ").trim();
   if (!compact) return "新对话";
@@ -71,7 +84,9 @@ export default function AgentDetailPage({
   const { id } = use(params);
   const [agent, setAgent] = useState<AgentWithTools | null>(null);
   const [availableTools, setAvailableTools] = useState<ToolRow[]>([]);
+  /** 左侧正在改的草稿；发送消息故意不读它，只读 savedDraft / thread.config。 */
   const [draft, setDraft] = useState<AgentDraft | null>(null);
+  /** 已落库的参数；新对话与首条消息用这份，保证「未点保存」不会悄悄改运行时。 */
   const [savedDraft, setSavedDraft] = useState<AgentDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -93,7 +108,18 @@ export default function AgentDetailPage({
   const messages = useMemo(() => activeThread?.messages ?? [], [activeThread]);
 
   useEffect(() => {
-    let cancelled = false; // 闭包布尔锁，防止异步操作未完成时组件被卸载
+    let cancelled = false;
+    /**
+     * 详情页首屏：智能体 + 工具目录 + 会话列表。
+     *
+     * 入参：路由 `id`。
+     * 出参：灌 agent/draft/savedDraft；threads 先放一条本地空会话，再与远程列表合并。
+     * 步骤：
+     * 1. 读 agents 行；mock 用户不一致时伪装成 404，避免把别人的 prompt 漏到试运行页。
+     * 2. 拉该 user 的 explicit tools + 本 agent 的绑定，拼出 draft。
+     * 3. 立刻塞一条未 persisted 的空 thread，让聊天区可先用，不必等列表接口。
+     * 4. 拉远程列表后：本地未落库会话留在最前，避免接口返回把「新对话」冲掉。
+     */
     async function load() {
       setLoading(true);
       setError(null);
@@ -114,6 +140,7 @@ export default function AgentDetailPage({
         return;
       }
       const agentRow = row as AgentRow;
+      // RLS 未开：用 mock user 做归属校验，失败文案与「不存在」相同，避免泄露他人智能体是否存在。
       if (mockUserId && agentRow.user_id !== mockUserId) {
         setError("未找到该智能体。");
         setAgent(null);
@@ -144,8 +171,8 @@ export default function AgentDetailPage({
       const nextDraft = draftFromAgent(hydrated);
       const fresh = createEmptyThread(nextDraft);
       setAvailableTools(allTools);
-      setAgent(hydrated); /*  */
-      setDraft(nextDraft); /*  */
+      setAgent(hydrated);
+      setDraft(nextDraft);
       setSavedDraft(nextDraft);
       setThreads([fresh]);
       setActiveThreadId(fresh.threadId);
@@ -175,6 +202,7 @@ export default function AgentDetailPage({
 
       if (cancelled) return;
       setThreads((prev) => {
+        // 远程列表不含未发过消息的本地草稿；必须保留，否则用户刚点「新对话」会被接口回写冲掉。
         const local = prev.filter((thread) => !thread.persisted);
         const keepLocal =
           local.length > 0 ? local : [createEmptyThread(nextDraft)];
@@ -195,6 +223,7 @@ export default function AgentDetailPage({
   function startNewConversation(config = savedDraft) {
     if (!config || streaming || historyLoading) return;
     const fresh = createEmptyThread(config);
+    // 丢掉其它未 persisted 空会话，侧栏只保留一条「新对话」+ 已落库历史。
     setThreads((prev) => [fresh, ...prev.filter((thread) => thread.persisted)]);
     setActiveThreadId(fresh.threadId);
     setHistoryLoading(false);
@@ -202,6 +231,10 @@ export default function AgentDetailPage({
     setConfigOpen(false);
   }
 
+  /**
+   * 切换会话。未落库的空会话没有 history；已 persisted 的每次点选都重拉，
+   * 避免沿用内存里的流式半成品（例如上次 SSE 中断留下的空 assistant 气泡）。
+   */
   async function selectThread(threadId: string) {
     if (streaming || historyLoading) return;
     const thread = threads.find((item) => item.threadId === threadId);
@@ -242,6 +275,7 @@ export default function AgentDetailPage({
     threadId: string,
     updater: (thread: ConversationThread) => ConversationThread,
   ) {
+    // 按 id 替换单条，避免 SSE 每次 token 都重建整个 threads 数组语义之外的引用混乱。
     setThreads((prev) =>
       prev.map((thread) =>
         thread.threadId === threadId ? updater(thread) : thread,
@@ -249,6 +283,13 @@ export default function AgentDetailPage({
     );
   }
 
+  /**
+   * 把试运行草稿写回 agents + 全量重写 agent_tools。
+   *
+   * 入参：`nextDraft` 待落库配置；`successText` 区分「保存」与「复用该对话参数」两条路径的提示。
+   * 出参：成功返回洗过的 AgentDraft，失败 null（调用方不要因此开新对话）。
+   * 步骤：更新 agents 行 → DELETE 全部绑定 → INSERT 勾选 → 本地 agent/draft/savedDraft 一起对齐，避免 UI 与库短暂分叉。
+   */
   async function persistAgent(nextDraft: AgentDraft, successText: string) {
     if (!agent || saving) return null;
     const trimmedName = nextDraft.name.trim();
@@ -313,6 +354,18 @@ export default function AgentDetailPage({
     }
   }
 
+  /**
+   * 发送试运行消息并消费 /api/chat SSE。
+   *
+   * 入参：输入框文本；实际请求体用 `sendConfig`，不是左侧未保存 draft。
+   * 出参：把 user + 空 assistant 气泡写入当前 thread，再按 token/tool 事件原地拼内容。
+   * 步骤：
+   * 1. 没有 active thread 则用 savedDraft 现开一条。
+   * 2. 该 thread 若还没有消息，把此刻的 savedDraft clone 进 config（冻结本轮模型/工具）；已有消息则沿用 thread.config。
+   * 3. 先乐观插入气泡并把 persisted=true，这样刷新列表时不会把进行中的对话当本地草稿丢掉。
+   * 4. 读流：半帧留在 buffer；结束时补 `\n\n` 冲掉最后一帧。
+   * 5. 失败且 assistant 仍无 content 时才写错误文案，避免覆盖已经流出来的半段回复。
+   */
   async function sendMessage() {
     const text = input.trim();
     if (!text || streaming || !agent || !savedDraft) return;
@@ -324,6 +377,7 @@ export default function AgentDetailPage({
       setActiveThreadId(thread.threadId);
     }
 
+    // 空会话：用已保存参数冻结本 thread；续聊必须沿用当时的 config，左侧后改的草稿不能改写历史轮次。
     const sendConfig =
       thread.messages.length === 0 ? cloneDraft(savedDraft) : thread.config;
     const threadId = thread.threadId;
@@ -392,6 +446,7 @@ export default function AgentDetailPage({
         }
       }
       if (buffer.trim()) {
+        // 流结束时最后一帧可能没有尾部分隔符，补空行才能解析。
         const parsed = parseSseChunk(`${buffer}\n\n`);
         for (const event of parsed.events) {
           applyEvent(threadId, assistantMsg.id, event);
@@ -413,6 +468,16 @@ export default function AgentDetailPage({
     }
   }
 
+  /**
+   * 把单条 SSE 事件叠到指定 assistant 气泡。
+   *
+   * 入参：threadId、本轮占位 assistant 的 id、已解析事件。
+   * 出参：仅替换该消息；token 追加 content，工具按 runId upsert。
+   * 步骤：
+   * - tool_start：先滤掉同 runId 再追加，防止重放/重复 start 画出两行。
+   * - tool_end：对得上 runId 则改 done；对不上（乱序/丢 start）也补一条 done，避免工具结果静默丢失。
+   * - error：有正文则保留已流内容，只在气泡仍空时写入错误句。
+   */
   function applyEvent(
     threadId: string,
     assistantId: string,
@@ -483,6 +548,7 @@ export default function AgentDetailPage({
       draft,
       "已保存。发送消息将使用新参数创建新的对话。",
     );
+    // 保存后立刻开新会话：已有 thread 继续用旧 config，新消息才走新参数，避免同一 thread 中途换模型。
     if (persisted) startNewConversation(persisted);
   }
 
@@ -678,6 +744,7 @@ export default function AgentDetailPage({
               rows={3}
               disabled={streaming || historyLoading || !agent || !savedDraft}
               onKeyDown={(e) => {
+                // 单独 Enter 发送、Shift+Enter 换行：Textarea 默认 Enter 会插入换行，必须拦掉。
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void sendMessage();

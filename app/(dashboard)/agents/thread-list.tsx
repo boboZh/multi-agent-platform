@@ -9,6 +9,7 @@ type ThreadListProps = {
   threads: ConversationThread[];
   activeThreadId: string | null;
   loading?: boolean;
+  /** 流式或拉 history 时锁住切换/新建，避免两个 SSE/两个 history 请求交叉写同一条 thread。 */
   disabled?: boolean;
   onSelect: (threadId: string) => void;
   onNew: () => void;
@@ -16,6 +17,7 @@ type ThreadListProps = {
 
 function formatThreadTime(iso: string) {
   const date = new Date(iso);
+  // 坏时间戳直接藏掉，避免把 Invalid Date 渲到侧栏。
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleString("zh-CN", {
     month: "numeric",

@@ -47,6 +47,12 @@ import {
   toolLabel,
 } from "./utils";
 
+/**
+ * 智能体目录：工作流画布拖拽前的配置入口。
+ * 卡片点整卡进试运行，底部操作区单独 stopPropagation，避免「改配置」被路由成详情。
+ */
+
+/** 首屏骨架：与真实卡片区块高度接近，避免加载完成时网格突然塌陷。 */
 function SkeletonCard() {
   return (
     <div className="animate-pulse rounded-xl border border-primary/10 p-5">
@@ -78,6 +84,7 @@ export default function AgentsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [agents, setAgents] = useState<AgentWithTools[]>([]);
+  /** 全量显式工具目录，传给编辑器做绑定；与每张卡片上的 agent.explicitTools（已绑定子集）分开存，避免每次打开弹窗再打一轮 tools 表。 */
   const [explicitTools, setExplicitTools] = useState<ToolRow[]>([]);
 
   const [query, setQuery] = useState("");
@@ -90,6 +97,7 @@ export default function AgentsPage() {
   const filteredAgents = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return agents;
+    // 只搜名称：系统提示词进过滤会让用户搜到「看起来不匹配标题」的卡，目录场景不合适。
     return agents.filter((a) => a.name.toLowerCase().includes(q));
   }, [agents, query]);
 
@@ -103,6 +111,16 @@ export default function AgentsPage() {
     setEditorOpen(true);
   }
 
+  /**
+   * 拉目录并拼出 AgentWithTools。
+   *
+   * 入参：`silent` — true 时不切全页 loading（刷新/保存后），避免网格被骨架闪一下。
+   * 出参：写入 `agents` + `explicitTools`；失败只写 `error`。
+   * 步骤：
+   * 1. 并行拉 agents 与 explicit tools（implicit 不进目录，否则编辑器会把运行时默认工具画成可解绑项）。
+   * 2. 再按 agent_id IN (...) 一次拉齐中间表，避免对每个 agent 打 N 次请求。
+   * 3. 只把「当前工具目录里仍存在」的 tool_id 挂上去，跳过已删工具的幽灵绑定。
+   */
   async function loadAll({ silent = false }: { silent?: boolean } = {}) {
     if (!silent) setLoading(true);
     setError(null);
@@ -155,6 +173,7 @@ export default function AgentsPage() {
       const toolsByAgent = new Map<UUID, ToolRow[]>();
       for (const link of agentToolRows) {
         const tool = toolById.get(link.tool_id);
+        // 中间表可能仍指向已删除/已改为 implicit 的工具，不能展示成有效绑定。
         if (!tool) continue;
         const list = toolsByAgent.get(link.agent_id) ?? [];
         list.push(tool);
@@ -176,6 +195,7 @@ export default function AgentsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // 推迟到 microtask：避开 Strict Mode 下 effect 同步执行时与卸载竞态；cancelled 让迟到的 setState 失效。
     queueMicrotask(() => {
       if (cancelled) return;
       void loadAll();
@@ -194,6 +214,10 @@ export default function AgentsPage() {
     }
   }
 
+  /**
+   * 删除智能体。先清 agent_tools 再删 agents，避免中间表外键挡住删除。
+   * `deletingId` 作互斥锁，防止连点菜单对同一行发两次 delete。
+   */
   async function deleteAgent(agentId: UUID) {
     if (deletingId) return;
     setDeletingId(agentId);
@@ -415,6 +439,7 @@ export default function AgentsPage() {
 
               <CardFooter
                 className="justify-between"
+                // 卡片本身跳详情；底部按钮必须拦住冒泡，否则「改配置」会先被路由走掉。
                 onClick={(e) => e.stopPropagation()}
               >
                 <Button

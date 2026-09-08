@@ -41,6 +41,7 @@ type AgentEditorDialogProps = {
   onError: (message: string | null) => void;
 };
 
+/** 新建弹窗的默认值；模型/温度与详情页 draftFromAgent 的回落策略保持一致，避免两处入口写出不同默认配置。 */
 function emptyForm() {
   return {
     name: "",
@@ -69,6 +70,7 @@ export function AgentEditorDialog({
   const isEditing = Boolean(agent);
   const userId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
 
+  // 只在打开时灌表：关闭过程中不清空，避免 Dialog 退场动画里闪一下空白表单。
   useEffect(() => {
     if (!open) return;
     if (agent) {
@@ -94,6 +96,7 @@ export function AgentEditorDialog({
   }
 
   function toggleTool(toolId: UUID) {
+    // 每次 new Set：React 对同一 Set 引用的 mutate 不会触发重渲染。
     setSelectedToolIds((prev) => {
       const next = new Set(prev);
       if (next.has(toolId)) next.delete(toolId);
@@ -102,6 +105,14 @@ export function AgentEditorDialog({
     });
   }
 
+  /**
+   * 创建或更新智能体，并全量重写工具绑定。
+   *
+   * 入参：组件内表单 state（名称必填；温度入库前再 clamp）。
+   * 出参：成功则关弹窗并 `onSaved()` 让目录静默刷新；失败只 `onError`，不关窗以免丢掉未保存输入。
+   * 步骤：trim 名称 → upsert agents 行 → DELETE 该 agent 全部 agent_tools → 再 INSERT 当前勾选项。
+   * 绑定采用「删光再插」而不是 diff：勾选集合很小，省掉一次读库对账，也避免漏删幽灵行。
+   */
   async function upsertAgent() {
     if (saving) return;
     const trimmedName = name.trim();
@@ -233,6 +244,7 @@ export function AgentEditorDialog({
                 value={modelName}
                 onChange={(e) => {
                   const value = e.target.value;
+                  // 忽略不在白名单的 option（脏 DOM / 扩展注入），防止把任意字符串写入 model_name。
                   if (isModelValue(value)) setModelName(value);
                 }}
                 className="h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-primary focus-visible:ring-3 focus-visible:ring-primary/30"
@@ -331,6 +343,7 @@ export function AgentEditorDialog({
 
         <DialogFooter className="items-center justify-between sm:justify-between">
           <div className="mr-auto text-xs text-muted-foreground">
+            {/* implicit 由运行时注入，禁止在 UI 解绑，否则试运行和画布节点会丢检索/记忆类能力。 */}
             隐式工具始终启用，不会在此显示。
           </div>
           <div className="flex items-center gap-2">

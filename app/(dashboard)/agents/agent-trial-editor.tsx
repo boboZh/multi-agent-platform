@@ -15,6 +15,11 @@ import {
 } from "./types";
 import { clamp, formatTemp, isModelValue, toolLabel } from "./utils";
 
+/**
+ * 试运行侧栏的可编辑快照。与 DB 行刻意拆开：
+ * 左侧改草稿不应立刻改 `agents` 表，也不应改已经 freeze 在各 thread.config 里的参数。
+ * `selectedToolIds` 用数组而非 Set，便于 JSON 进 /api/chat 以及 draftsEqual 做浅比较。
+ */
 export type AgentDraft = {
   name: string;
   systemPrompt: string;
@@ -23,7 +28,12 @@ export type AgentDraft = {
   selectedToolIds: UUID[];
 };
 
-// 将agent配置转换为草稿+容错
+/**
+ * DB 行 → 表单草稿。把可空/越界字段洗成编辑器能受控的值，避免 Slider/select 拿到 null。
+ *
+ * 入参：智能体行 + 已绑定显式工具。
+ * 出参：始终合法的 AgentDraft（未知模型回落 MODEL_VALUES[0]，温度 clamp 到 0–1）。
+ */
 export function draftFromAgent(agent: {
   name: string;
   system_prompt: string | null;
@@ -42,7 +52,10 @@ export function draftFromAgent(agent: {
   };
 }
 
-// 判断agent配置是否修改过
+/**
+ * 脏检查。工具 id 先排序再比，避免「勾选顺序不同」被当成未保存；
+ * name 只比 trim，防止仅尾随空格就点亮保存按钮。
+ */
 export function draftsEqual(a: AgentDraft, b: AgentDraft) {
   const aIds = [...a.selectedToolIds].sort();
   const bIds = [...b.selectedToolIds].sort();
@@ -79,6 +92,7 @@ export function AgentTrialEditor({
     const selected = new Set(draft.selectedToolIds);
     if (selected.has(toolId)) selected.delete(toolId);
     else selected.add(toolId);
+    // 回传新数组：父组件用 spread 合并 patch，原地 mutate draft.selectedToolIds 不会触发 dirty 重算。
     onChange({ selectedToolIds: Array.from(selected) });
   }
 
@@ -212,6 +226,7 @@ export function AgentTrialEditor({
       <div className="border-t p-4">
         <Button
           className="w-full"
+          // 流式中禁用：保存会立刻开新对话，不能和 in-flight SSE 抢同一份 threads state。
           disabled={disabled || saving || !dirty || !draft.name.trim()}
           onClick={onSave}
         >

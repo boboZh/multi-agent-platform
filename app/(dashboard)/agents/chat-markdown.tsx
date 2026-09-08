@@ -3,6 +3,8 @@
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 
+/** 模型输出当 Markdown 渲染；`skipHtml` 关掉原始 HTML，降低 prompt 注入把气泡变成可执行标记的风险。 */
+
 export function ChatMarkdown({
   content,
   variant = "assistant",
@@ -24,6 +26,7 @@ export function ChatMarkdown({
         "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
         "[&_a]:underline [&_a]:underline-offset-2",
         "[&_table]:my-2 [&_table]:w-full [&_table]:text-xs [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_td]:border [&_td]:px-2 [&_td]:py-1",
+        // 用户气泡是实心主色，代码块必须换成浅底，否则和助手侧 muted 底会糊成一块。
         variant === "user"
           ? "[&_pre]:bg-white/15 [&_code]:bg-white/20 [&_a]:text-inherit [&_th]:border-white/30 [&_td]:border-white/30"
           : "[&_pre]:bg-muted [&_code]:bg-muted [&_a]:text-primary [&_th]:border-border [&_td]:border-border",
@@ -33,6 +36,7 @@ export function ChatMarkdown({
         skipHtml
         components={{
           a: ({ href, children }) => (
+            // 模型常吐外链：新标签打开，并堵住 window.opener 反向 tabnabbing。
             <a href={href} target="_blank" rel="noreferrer noopener">
               {children}
             </a>

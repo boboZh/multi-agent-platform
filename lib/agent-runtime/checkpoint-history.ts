@@ -18,7 +18,7 @@ export type CheckpointChatMessage = {
     output?: unknown;
   }>;
 };
-
+// 提取content中的字符串
 function contentToText(message: BaseMessage) {
   const { content } = message;
   if (typeof content === "string") return content;
@@ -39,7 +39,7 @@ function messageId(message: BaseMessage, fallback: string) {
   const id = (message as { id?: unknown }).id;
   return typeof id === "string" && id.trim() ? id : fallback;
 }
-
+// 拼接处理checkpointer中的ToolMessage和AIMessage
 export function checkpointMessagesToChat(
   messages: BaseMessage[],
 ): CheckpointChatMessage[] {
@@ -119,7 +119,7 @@ export function checkpointMessagesToChat(
     (item) => item.content.trim().length > 0 || item.tools.length > 0,
   );
 }
-
+// 
 function coerceMessage(item: unknown): BaseMessage | null {
   if (item && typeof item === "object" && typeof (item as BaseMessage)._getType === "function") {
     return item as BaseMessage;
@@ -156,7 +156,7 @@ function coerceMessage(item: unknown): BaseMessage | null {
   }
   return null;
 }
-
+// 加载redis checkpointer中的历史消息
 export async function loadCheckpointMessages(threadId: string) {
   const checkpointer = await getRedisCheckpointer();
   const tuple = await checkpointer.getTuple({
