@@ -300,6 +300,8 @@ export default function WorkflowEditorPage({
     const description = form.description.trim();
     const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
 
+    console.log("sanitized", sanitized);
+    console.log("nextDocument", nextDocument);
     try {
       if (isNew) {
         const { data, error: insertErr } = await supabase
@@ -310,7 +312,6 @@ export default function WorkflowEditorPage({
             description: description || null,
             status: "draft",
             dsl: nextDocument,
-            flow_data: {},
           })
           .select("id")
           .single();
