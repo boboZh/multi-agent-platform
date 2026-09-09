@@ -1,0 +1,4 @@
+{"sessionId": "3831ee", "runId": "pre-fix", "hypothesisId": "A", "location": "repro.sh:A", "message": "isolated npm install vitest", "data": {}, "timestamp": 1788850353380}
+{"sessionId": "3831ee", "runId": "pre-fix", "hypothesisId": "D", "location": "repro.sh:D", "message": "isolated npm install vitest", "data": {}, "timestamp": 1788850388625}
+{"sessionId": "3831ee", "runId": "pre-fix", "hypothesisId": "A22", "location": "repro.sh:A22", "message": "isolated npm install vitest", "data": {}, "timestamp": 1788850529794}
+{"sessionId": "3831ee", "runId": "pre-fix", "hypothesisId": "D22", "location": "repro.sh:D22", "message": "isolated npm install vitest", "data": {}, "timestamp": 1788850530854}

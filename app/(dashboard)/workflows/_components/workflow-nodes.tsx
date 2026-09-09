@@ -1,0 +1,188 @@
+"use client";
+
+import { createContext, memo, useContext } from "react";
+import { Handle, Position, type NodeProps } from "reactflow";
+import {
+  Bot,
+  CircleStop,
+  GitBranch,
+  Play,
+  UserCheck,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
+import {
+  NODE_KIND_LABELS,
+  NODE_PORT_SPEC,
+  type NodeKind,
+} from "@/lib/workflow-dsl/kinds";
+import type { WorkflowNodeData } from "@/lib/workflow-dsl/schema";
+import { cn } from "@/lib/utils";
+
+/**
+ * 画布节点。六种 kind 共用一个渲染器：端口数量与语义完全由 data.kind 决定，
+ * 分成六个组件只会让「条件节点动态 handle」这段逻辑散落多处。
+ * nodeTypes 在模块作用域定义并导出，避免每次渲染换新对象导致 reactflow 整图重挂。
+ */
+
+/**
+ * 校验错误锚点。用 context 而不是塞进 node.data：
+ * data 是要落库的 DSL，把瞬时的校验状态写进去会污染文档，还会让 dirty 判定误报。
+ */
+export const NodeIssuesContext = createContext<ReadonlySet<string>>(new Set());
+
+/**
+ * agentId / toolId → 展示名。节点卡上要显示「绑定了哪个智能体」，
+ * 但 DSL 里只存 UUID，名字得由编辑器查表后从外面传进来。
+ */
+export const NodeRefNamesContext = createContext<ReadonlyMap<string, string>>(
+  new Map(),
+);
+
+const KIND_ICONS: Record<NodeKind, LucideIcon> = {
+  start: Play,
+  end: CircleStop,
+  agent: Bot,
+  tool: Wrench,
+  condition: GitBranch,
+  human_review: UserCheck,
+};
+
+const HANDLE_CLASS =
+  "!h-2.5 !w-2.5 !rounded-full !border-2 !border-background !bg-primary";
+
+/** 节点卡上的一行摘要：让用户不点开抽屉也能看出这个节点配没配全。 */
+function summaryOf(
+  data: WorkflowNodeData,
+  refNames: ReadonlyMap<string, string>,
+): { text: string; muted: boolean } {
+  switch (data.kind) {
+    case "agent": {
+      const id = data.config.agentId;
+      if (!id) return { text: "未绑定智能体", muted: true };
+      return { text: refNames.get(id) ?? "已绑定智能体", muted: false };
+    }
+    case "tool": {
+      const id = data.config.toolId;
+      if (!id) return { text: "未绑定工具", muted: true };
+      return { text: refNames.get(id) ?? "已绑定工具", muted: false };
+    }
+    case "condition":
+      return {
+        text:
+          data.config.mode === "expression"
+            ? data.config.expression
+            : `LLM 路由 · ${data.config.modelName}`,
+        muted: false,
+      };
+    case "human_review":
+      return {
+        text: `${data.config.title} · ${data.config.formFields.length} 个字段`,
+        muted: false,
+      };
+    default:
+      return { text: "", muted: true };
+  }
+}
+
+function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData>) {
+  const issues = useContext(NodeIssuesContext);
+  const refNames = useContext(NodeRefNamesContext);
+  const hasIssue = issues.has(id);
+  const Icon = KIND_ICONS[data.kind];
+  const summary = summaryOf(data, refNames);
+
+  // 端口有无一律读 NODE_PORT_SPEC，和连线校验用的是同一张表，不会出现「画得出但连不上」。
+  const spec = NODE_PORT_SPEC[data.kind];
+  const isCondition = data.kind === "condition";
+  const branches = isCondition ? data.config.branches : [];
+
+  return (
+    <div
+      className={cn(
+        "min-w-[190px] max-w-[260px] rounded-xl border bg-card px-3 py-2.5 shadow-sm transition-colors",
+        selected
+          ? "border-primary ring-2 ring-primary/30"
+          : "border-foreground/10",
+        hasIssue && !selected && "border-destructive/60 ring-2 ring-destructive/20",
+      )}
+    >
+      {spec.targets > 0 ? (
+        <Handle
+          type="target"
+          position={Position.Top}
+          className={HANDLE_CLASS}
+        />
+      ) : null}
+
+      <div className="flex items-center gap-2">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Icon className="h-3.5 w-3.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium text-foreground">
+            {data.label}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {NODE_KIND_LABELS[data.kind]}
+          </div>
+        </div>
+      </div>
+
+      {summary.text ? (
+        <div
+          className={cn(
+            "mt-2 truncate rounded-md bg-muted/60 px-2 py-1 text-[11px]",
+            summary.muted ? "text-muted-foreground italic" : "text-foreground/80",
+          )}
+          title={summary.text}
+        >
+          {summary.text}
+        </div>
+      ) : null}
+
+      {isCondition ? (
+        <>
+          {/* 分支名要贴着各自的端口显示，否则多分支时用户分不清哪条线是哪个 key。 */}
+          <div className="mt-2 flex justify-between gap-1 text-[10px] text-muted-foreground">
+            {branches.map((branch) => (
+              <span key={branch.key} className="truncate" title={branch.key}>
+                {branch.label || branch.key}
+              </span>
+            ))}
+          </div>
+          {branches.map((branch, index) => (
+            <Handle
+              key={branch.key}
+              id={branch.key}
+              type="source"
+              position={Position.Bottom}
+              // 端口按分支数均分底边；用 key 当 handle id，编译器据此选边。
+              style={{ left: `${((index + 1) / (branches.length + 1)) * 100}%` }}
+              className={HANDLE_CLASS}
+            />
+          ))}
+        </>
+      ) : spec.sources !== 0 ? (
+        // 不带 id 的 source handle → 连接时 sourceHandle 为 null，正是非条件边的约定。
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className={HANDLE_CLASS}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const WorkflowNodeCard = memo(WorkflowNodeCardImpl);
+
+/** 六个画布 type 全部指向同一个渲染器；语义差异在组件内部按 data.kind 分流。 */
+export const workflowNodeTypes = {
+  startNode: WorkflowNodeCard,
+  endNode: WorkflowNodeCard,
+  agentNode: WorkflowNodeCard,
+  toolNode: WorkflowNodeCard,
+  conditionNode: WorkflowNodeCard,
+  interruptNode: WorkflowNodeCard,
+};

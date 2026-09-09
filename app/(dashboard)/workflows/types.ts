@@ -12,3 +12,12 @@ export type FlowRecord = Omit<FlowRow, "flow_data">;
 /** 查询列清单，集中一处，避免列表页与编辑器各写一串字符串导致字段漂移。 */
 export const FLOW_SELECT_COLUMNS =
   "id,user_id,name,description,status,version,dsl,created_at,updated_at";
+
+/**
+ * 编辑器当前选中的对象。选中态是纯 UI 状态，刻意不写进 WorkflowDocument ——
+ * 一写进去，平移画布或点一下节点都会让文档变 dirty，保存按钮就永远亮着。
+ * 无选中时右侧抽屉展示工作流级设置（名称、描述）。
+ */
+export type EditorSelection =
+  | { type: "node"; id: string }
+  | { type: "edge"; id: string };
