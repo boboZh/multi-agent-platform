@@ -547,7 +547,12 @@ export const workflowDocumentCompileSchema =
 
 export function formatWorkflowIssues(error: z.ZodError): WorkflowIssue[] {
   return error.issues.map((issue) => {
-    const params = issue.params as { nodeId?: string; edgeId?: string } | undefined;
+    // 只有 custom issue 才带 params（本文件所有拓扑校验都走 addIssue → custom）。
+    // 内建 issue（类型不符、min 长度等）上没有这个字段，直接读会被 TS 拒掉。
+    const params =
+      issue.code === z.ZodIssueCode.custom
+        ? (issue.params as { nodeId?: string; edgeId?: string } | undefined)
+        : undefined;
     return {
       message: issue.message,
       path: issue.path.map((part) =>
