@@ -37,7 +37,7 @@ export const NODE_TYPES = [
 ] as const;
 
 export const KIND_BY_NODE_TYPE = Object.fromEntries(
-  NODE_KINDS.map((kind) => [NODE_TYPE_BY_KIND[kind], kind]),
+  NODE_KINDS.map((kind) => [NODE_TYPE_BY_KIND[kind], kind])
 ) as Record<NodeType, NodeKind>;
 
 export const EDGE_KINDS = ["normal", "branch"] as const;

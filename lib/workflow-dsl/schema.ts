@@ -80,10 +80,12 @@ const conditionBaseConfigSchema = z.object({
   defaultBranch: branchKeySchema,
 });
 
-export const conditionExpressionConfigSchema = conditionBaseConfigSchema.extend({
-  mode: z.literal("expression"),
-  expression: z.string().min(1, "表达式不能为空"),
-});
+export const conditionExpressionConfigSchema = conditionBaseConfigSchema.extend(
+  {
+    mode: z.literal("expression"),
+    expression: z.string().min(1, "表达式不能为空"),
+  }
+);
 
 export const conditionLlmConfigSchema = conditionBaseConfigSchema.extend({
   mode: z.literal("llm"),
@@ -292,7 +294,7 @@ function addIssue(
   ctx: z.RefinementCtx,
   message: string,
   path: Array<string | number>,
-  params?: { nodeId?: string; edgeId?: string },
+  params?: { nodeId?: string; edgeId?: string }
 ) {
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
@@ -356,6 +358,36 @@ function refineStart(doc: WorkflowDocument, ctx: z.RefinementCtx) {
     });
   }
 }
+// fix: 校验孤立节点
+function refineIsolateNode(doc: WorkflowDocument, ctx: z.RefinementCtx) {
+  const { nodes, edges } = doc;
+  for (const [index, node] of nodes.entries()) {
+    const { type } = node;
+    const outgoingEdges = outgoing(edges, node.id);
+    const incomingEdges = incoming(edges, node.id);
+    if (type === NODE_TYPE_BY_KIND.start && outgoingEdges.length === 0) {
+      addIssue(ctx, "start 节点不能没有出边", ["nodes", index, "id"], {
+        nodeId: node.id,
+      });
+      continue;
+    } else if (type === NODE_TYPE_BY_KIND.end && incomingEdges.length === 0) {
+      addIssue(ctx, "end 节点不能没有入边", ["nodes", index, "id"], {
+        nodeId: node.id,
+      });
+      continue;
+    } else if (
+      type !== NODE_TYPE_BY_KIND.start &&
+      type !== NODE_TYPE_BY_KIND.end &&
+      (outgoingEdges.length === 0 || incomingEdges.length === 0)
+    ) {
+      addIssue(ctx, "孤立节点", ["nodes", index, "id"], {
+        nodeId: node.id,
+      });
+      continue;
+    }
+  }
+  console.log("refineIsolateNode: ", doc);
+}
 
 function refineEdgesExist(doc: WorkflowDocument, ctx: z.RefinementCtx) {
   const nodeIds = new Set(doc.nodes.map((node) => node.id));
@@ -365,7 +397,7 @@ function refineEdgesExist(doc: WorkflowDocument, ctx: z.RefinementCtx) {
         ctx,
         `边指向不存在的 source: ${edge.source}`,
         ["edges", index, "source"],
-        { edgeId: edge.id },
+        { edgeId: edge.id }
       );
     }
     if (!nodeIds.has(edge.target)) {
@@ -373,7 +405,7 @@ function refineEdgesExist(doc: WorkflowDocument, ctx: z.RefinementCtx) {
         ctx,
         `边指向不存在的 target: ${edge.target}`,
         ["edges", index, "target"],
-        { edgeId: edge.id },
+        { edgeId: edge.id }
       );
     }
   }
@@ -382,7 +414,7 @@ function refineEdgesExist(doc: WorkflowDocument, ctx: z.RefinementCtx) {
 function refinePortsAndControlFlow(
   doc: WorkflowDocument,
   ctx: z.RefinementCtx,
-  mode: WorkflowValidationMode,
+  mode: WorkflowValidationMode
 ) {
   const nodeById = new Map(doc.nodes.map((node) => [node.id, node]));
 
@@ -432,7 +464,7 @@ function refinePortsAndControlFlow(
             ctx,
             `条件分支「${branch.key}」必须有且仅有一条出边`,
             ["nodes", nodeIndex, "data", "config", "branches"],
-            { nodeId: node.id },
+            { nodeId: node.id }
           );
           continue;
         }
@@ -441,7 +473,7 @@ function refinePortsAndControlFlow(
             ctx,
             `条件分支「${branch.key}」存在多条出边`,
             ["nodes", nodeIndex, "data", "config", "branches"],
-            { nodeId: node.id },
+            { nodeId: node.id }
           );
         }
         for (const edge of matches) {
@@ -451,14 +483,14 @@ function refinePortsAndControlFlow(
               ctx,
               "条件出边的 data.kind 必须为 branch",
               ["edges", edgeIndex, "data", "kind"],
-              { nodeId: node.id, edgeId: edge.id },
+              { nodeId: node.id, edgeId: edge.id }
             );
           } else if (edge.data.branchKey !== branch.key) {
             addIssue(
               ctx,
               "sourceHandle、branchKey 与 branches[].key 必须一致",
               ["edges", edgeIndex, "data", "branchKey"],
-              { nodeId: node.id, edgeId: edge.id },
+              { nodeId: node.id, edgeId: edge.id }
             );
           }
         }
@@ -472,7 +504,7 @@ function refinePortsAndControlFlow(
             ctx,
             "条件节点出边的 sourceHandle 必须是某个 branch key",
             ["edges", edgeIndex, "sourceHandle"],
-            { nodeId: node.id, edgeId: edge.id },
+            { nodeId: node.id, edgeId: edge.id }
           );
         }
       }
@@ -486,40 +518,57 @@ function refinePortsAndControlFlow(
           ctx,
           "非条件出边的 data.kind 必须为 normal",
           ["edges", edgeIndex, "data", "kind"],
-          { nodeId: node.id, edgeId: edge.id },
+          { nodeId: node.id, edgeId: edge.id }
         );
       }
     }
 
     if (node.data.kind === "human_review" && outs.length > 1) {
-      addIssue(
-        ctx,
-        "人工审核节点默认只能有一条出边",
-        ["nodes", nodeIndex],
-        { nodeId: node.id },
-      );
+      addIssue(ctx, "人工审核节点默认只能有一条出边", ["nodes", nodeIndex], {
+        nodeId: node.id,
+      });
     }
 
     if (mode === "compile") {
       if (node.data.kind !== "end" && outs.length < 1) {
-        addIssue(ctx, "可运行图中非结束节点必须至少有一条出边", ["nodes", nodeIndex], {
-          nodeId: node.id,
-        });
+        addIssue(
+          ctx,
+          "可运行图中非结束节点必须至少有一条出边",
+          ["nodes", nodeIndex],
+          {
+            nodeId: node.id,
+          }
+        );
       }
       if (node.data.kind === "human_review" && outs.length !== 1) {
-        addIssue(ctx, "可运行图中人工审核节点必须恰好有一条出边", ["nodes", nodeIndex], {
-          nodeId: node.id,
-        });
+        addIssue(
+          ctx,
+          "可运行图中人工审核节点必须恰好有一条出边",
+          ["nodes", nodeIndex],
+          {
+            nodeId: node.id,
+          }
+        );
       }
       if (node.data.kind === "agent" && !node.data.config.agentId) {
-        addIssue(ctx, "智能体节点必须绑定 agentId", ["nodes", nodeIndex, "data", "config", "agentId"], {
-          nodeId: node.id,
-        });
+        addIssue(
+          ctx,
+          "智能体节点必须绑定 agentId",
+          ["nodes", nodeIndex, "data", "config", "agentId"],
+          {
+            nodeId: node.id,
+          }
+        );
       }
       if (node.data.kind === "tool" && !node.data.config.toolId) {
-        addIssue(ctx, "工具节点必须绑定 toolId", ["nodes", nodeIndex, "data", "config", "toolId"], {
-          nodeId: node.id,
-        });
+        addIssue(
+          ctx,
+          "工具节点必须绑定 toolId",
+          ["nodes", nodeIndex, "data", "config", "toolId"],
+          {
+            nodeId: node.id,
+          }
+        );
       }
     }
   }
@@ -528,21 +577,22 @@ function refinePortsAndControlFlow(
 function refineTopology(
   doc: WorkflowDocument,
   ctx: z.RefinementCtx,
-  mode: Exclude<WorkflowValidationMode, "draft">,
+  mode: Exclude<WorkflowValidationMode, "draft">
 ) {
   refineUniqueIds(doc, ctx);
   refineStart(doc, ctx);
+  refineIsolateNode(doc, ctx);
   refineEdgesExist(doc, ctx);
   refinePortsAndControlFlow(doc, ctx, mode);
 }
 
 export const workflowDocumentSchema = workflowDocumentShapeSchema.superRefine(
-  (doc, ctx) => refineTopology(doc, ctx, "graph"),
+  (doc, ctx) => refineTopology(doc, ctx, "graph")
 );
 
 export const workflowDocumentCompileSchema =
   workflowDocumentShapeSchema.superRefine((doc, ctx) =>
-    refineTopology(doc, ctx, "compile"),
+    refineTopology(doc, ctx, "compile")
   );
 
 export function formatWorkflowIssues(error: z.ZodError): WorkflowIssue[] {
@@ -556,7 +606,7 @@ export function formatWorkflowIssues(error: z.ZodError): WorkflowIssue[] {
     return {
       message: issue.message,
       path: issue.path.map((part) =>
-        typeof part === "symbol" ? String(part) : part,
+        typeof part === "symbol" ? String(part) : part
       ),
       nodeId: params?.nodeId,
       edgeId: params?.edgeId,
@@ -566,7 +616,7 @@ export function formatWorkflowIssues(error: z.ZodError): WorkflowIssue[] {
 
 export function parseWorkflowDocument(
   input: unknown,
-  mode: WorkflowValidationMode = "graph",
+  mode: WorkflowValidationMode = "graph"
 ):
   | { ok: true; document: WorkflowDocument }
   | { ok: false; errors: WorkflowIssue[] } {
@@ -583,7 +633,9 @@ export function parseWorkflowDocument(
   return { ok: false, errors: formatWorkflowIssues(result.error) };
 }
 
-export function defaultConfigForKind(kind: NodeKind): WorkflowNodeData["config"] {
+export function defaultConfigForKind(
+  kind: NodeKind
+): WorkflowNodeData["config"] {
   switch (kind) {
     case "start":
       return {};
@@ -615,27 +667,46 @@ export function defaultConfigForKind(kind: NodeKind): WorkflowNodeData["config"]
   }
 }
 
-export function createNodeData(kind: NodeKind, label?: string): WorkflowNodeData {
+export function createNodeData(
+  kind: NodeKind,
+  label?: string
+): WorkflowNodeData {
   const resolvedLabel = label ?? NODE_KIND_LABELS[kind];
   const config = defaultConfigForKind(kind);
   switch (kind) {
     case "start":
-      return { kind, label: resolvedLabel, config: config as z.infer<typeof startConfigSchema> };
+      return {
+        kind,
+        label: resolvedLabel,
+        config: config as z.infer<typeof startConfigSchema>,
+      };
     case "end":
-      return { kind, label: resolvedLabel, config: config as z.infer<typeof endConfigSchema> };
+      return {
+        kind,
+        label: resolvedLabel,
+        config: config as z.infer<typeof endConfigSchema>,
+      };
     case "agent":
       return { kind, label: resolvedLabel, config: config as AgentNodeConfig };
     case "tool":
       return { kind, label: resolvedLabel, config: config as ToolNodeConfig };
     case "condition":
-      return { kind, label: resolvedLabel, config: config as ConditionNodeConfig };
+      return {
+        kind,
+        label: resolvedLabel,
+        config: config as ConditionNodeConfig,
+      };
     case "human_review":
-      return { kind, label: resolvedLabel, config: config as HumanReviewNodeConfig };
+      return {
+        kind,
+        label: resolvedLabel,
+        config: config as HumanReviewNodeConfig,
+      };
   }
 }
 
 export function createEmptyWorkflowDocument(
-  name = "未命名工作流",
+  name = "未命名工作流"
 ): WorkflowDocument {
   const startId = "n_start";
   const endId = "n_end";
