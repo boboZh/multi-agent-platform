@@ -5,6 +5,7 @@ import { Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { REVIEW_FIELD_TYPES, NODE_KIND_LABELS } from "@/lib/workflow-dsl/kinds";
 import type {
   WorkflowDocument,
@@ -18,6 +19,14 @@ import {
   setConditionBranchLabel,
   updateNode,
 } from "../lib/document";
+import {
+  duplicateInputMapTargets,
+  inputMapFromRows,
+  isLikelyStatePath,
+  isValidInputMapTarget,
+  rowsFromInputMap,
+  type InputMapRow,
+} from "../lib/input-map";
 import type { EditorSelection } from "../types";
 
 /**
@@ -113,6 +122,171 @@ function BranchKeyInput({
   );
 }
 
+/**
+ * inputMap 行编辑器。
+ *
+ * 入参：DSL 里的映射、目标键文案；出参：只含完整键值对的 Record 或 undefined。
+ * 执行步骤：
+ * 1. 初次挂载时把 record 展成有稳定 id 的行，保证逐字符改目标键时输入框不失焦。
+ * 2. 每次编辑先保留本地半成品，再把完整行折叠回 record 通知文档。
+ * 3. 重复键、非法目标键和可疑路径就地提示；路径只警告不拦截，因为编译器语法尚未最终确定。
+ *
+ * 调用方必须以 node.id 作为本组件祖先的 React key：用户切到另一个同 kind 节点时，
+ * 需要重新从那个节点的 inputMap 建立行状态，不能沿用上一个节点的本地半成品。
+ */
+function InputMapEditor({
+  value,
+  onChange,
+  targetLabel,
+  targetPlaceholder,
+}: {
+  value: Record<string, string> | undefined;
+  onChange: (next: Record<string, string> | undefined) => void;
+  targetLabel: string;
+  targetPlaceholder: string;
+}) {
+  const [rows, setRows] = useState<InputMapRow[]>(() =>
+    rowsFromInputMap(value),
+  );
+  const duplicates = duplicateInputMapTargets(rows);
+
+  function sameMap(
+    left: Record<string, string> | undefined,
+    right: Record<string, string> | undefined,
+  ) {
+    const leftEntries = Object.entries(left ?? {});
+    const rightEntries = Object.entries(right ?? {});
+    return (
+      leftEntries.length === rightEntries.length &&
+      leftEntries.every(([key, source]) => right?.[key] === source)
+    );
+  }
+
+  function commitRows(nextRows: InputMapRow[]) {
+    setRows(nextRows);
+    const nextMap = inputMapFromRows(nextRows);
+    // 添加一条空白行只是 UI 准备动作，不能把文档无意义地标成 dirty。
+    if (!sameMap(value, nextMap)) onChange(nextMap);
+  }
+
+  function patchRow(id: string, patch: Partial<InputMapRow>) {
+    commitRows(
+      rows.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-foreground">输入映射</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            从共享 state 取值并注入本节点。
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() =>
+            setRows((current) => [
+              ...current,
+              {
+                id: crypto.randomUUID(),
+                target: "",
+                source: "",
+              },
+            ])
+          }
+        >
+          <Plus className="h-3 w-3" />
+          添加
+        </Button>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-primary/20 px-3 py-4 text-center text-xs text-muted-foreground">
+          未配置映射，节点只使用默认上下文。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_28px] gap-1.5 px-1 text-[10px] font-medium text-muted-foreground">
+            <span>{targetLabel}</span>
+            <span>state 取值路径</span>
+            <span />
+          </div>
+
+          {rows.map((row) => {
+            const target = row.target.trim();
+            const source = row.source.trim();
+            const targetInvalid = Boolean(target) && !isValidInputMapTarget(target);
+            const sourceSuspicious = Boolean(source) && !isLikelyStatePath(source);
+            const duplicated = Boolean(target) && duplicates.has(target);
+
+            return (
+              <div
+                key={row.id}
+                className="rounded-lg border border-primary/15 bg-muted/30 p-2"
+              >
+                <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_28px] items-center gap-1.5">
+                  <Input
+                    value={row.target}
+                    placeholder={targetPlaceholder}
+                    aria-label={targetLabel}
+                    aria-invalid={targetInvalid || duplicated}
+                    className="h-8 font-mono text-xs"
+                    onChange={(event) =>
+                      patchRow(row.id, { target: event.target.value })
+                    }
+                  />
+                  <Input
+                    value={row.source}
+                    placeholder="state.vars.order_id"
+                    aria-label="state 取值路径"
+                    aria-invalid={sourceSuspicious}
+                    className="h-8 font-mono text-xs"
+                    onChange={(event) =>
+                      patchRow(row.id, { source: event.target.value })
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`删除输入映射 ${target || "空行"}`}
+                    onClick={() =>
+                      commitRows(rows.filter((item) => item.id !== row.id))
+                    }
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+
+                {targetInvalid || duplicated || sourceSuspicious ? (
+                  <div
+                    className={cn(
+                      "mt-1.5 text-[10px] leading-relaxed",
+                      targetInvalid || duplicated
+                        ? "text-destructive"
+                        : "text-amber-700",
+                    )}
+                  >
+                    {targetInvalid
+                      ? "目标键只能使用字母、数字、下划线，且不能以数字开头；修正前不会写入 DSL。"
+                      : duplicated
+                        ? "目标键重复；当前 DSL 只会保留最后一条。"
+                        : "路径通常应以 state. 开头；当前仅提示，不阻止保存。"}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StartEndForm() {
   return (
     <p className="text-sm text-muted-foreground">
@@ -159,6 +333,17 @@ function AgentForm({
           ))}
         </select>
       </Field>
+      <InputMapEditor
+        value={data.config.inputMap}
+        targetLabel="注入变量名"
+        targetPlaceholder="order"
+        onChange={(inputMap) =>
+          onChange({
+            ...data,
+            config: { ...data.config, inputMap },
+          })
+        }
+      />
       <Field
         label="输出键"
         htmlFor="node-agent-output"
@@ -210,6 +395,17 @@ function ToolForm({
           ))}
         </select>
       </Field>
+      <InputMapEditor
+        value={data.config.inputMap}
+        targetLabel="工具参数名"
+        targetPlaceholder="order_id"
+        onChange={(inputMap) =>
+          onChange({
+            ...data,
+            config: { ...data.config, inputMap },
+          })
+        }
+      />
       <Field label="输出键" htmlFor="node-tool-output" hint="留空则不写回 state。">
         <Input
           id="node-tool-output"
@@ -724,10 +920,20 @@ export function InspectorDrawer({
               <StartEndForm />
             ) : null}
             {node.data.kind === "agent" ? (
-              <AgentForm data={node.data} agents={agents} onChange={updateData} />
+              <AgentForm
+                key={node.id}
+                data={node.data}
+                agents={agents}
+                onChange={updateData}
+              />
             ) : null}
             {node.data.kind === "tool" ? (
-              <ToolForm data={node.data} tools={tools} onChange={updateData} />
+              <ToolForm
+                key={node.id}
+                data={node.data}
+                tools={tools}
+                onChange={updateData}
+              />
             ) : null}
             {node.data.kind === "condition" ? (
               <ConditionForm

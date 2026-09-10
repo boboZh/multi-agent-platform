@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   CircleCheck,
+  Code,
   GitBranch,
   Loader2,
   Save,
@@ -273,6 +274,37 @@ export default function WorkflowEditorPage({
     };
   }, [id, isNew]);
 
+  // 编译schema ast 到langgraph 
+  async function handleCompile() {
+    if (saving) return;
+    const sanitized = sanitizeDocumentForSave(doc);
+    if (!sanitized.ok) {
+      setError(sanitized.reason);
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setSaveMessage(null);
+    const mockUserId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
+    const name = form.name.trim() || "未命名工作流";
+    const description = form.description.trim();
+    const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
+    console.log("compile nextDocument", nextDocument);
+
+    await fetch(
+        `/api/workflow/compile`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            doc: nextDocument
+          }),
+        },
+    );
+
+    
+  }
+
   /**
    * 保存。
    *
@@ -300,8 +332,7 @@ export default function WorkflowEditorPage({
     const description = form.description.trim();
     const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
 
-    console.log("sanitized", sanitized);
-    console.log("nextDocument", nextDocument);
+    console.log("save nextDocument", nextDocument);
     try {
       if (isNew) {
         const { data, error: insertErr } = await supabase
@@ -434,6 +465,10 @@ export default function WorkflowEditorPage({
               </>
             )}
           </button>
+          <Button onClick={handleCompile} disabled={dirty} > 
+            <Code className="h-4 w-4" />
+            编译
+          </Button>
           <Button onClick={handleSave} disabled={saving || loading || !dirty}>
             {saving ? (
               <>
