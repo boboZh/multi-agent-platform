@@ -34,7 +34,12 @@ import {
   getErrorMessage,
   summarizeFlowDsl,
 } from "../utils";
-import { addNode, nextNodePosition, sanitizeDocumentForSave, type XY } from "../lib/document";
+import {
+  addNode,
+  nextNodePosition,
+  sanitizeDocumentForSave,
+  type XY,
+} from "../lib/document";
 import { NodePalette } from "../components/node-palette";
 import { WorkflowCanvas } from "../components/workflow-canvas";
 import {
@@ -88,7 +93,7 @@ export default function WorkflowEditorPage({
   const [savedForm, setSavedForm] = useState<FlowFormState | null>(null);
   /** 画布图的权威来源，同时直接作为 ReactFlow 的受控数据源。 */
   const [doc, setDoc] = useState<WorkflowDocument>(() =>
-    createEmptyWorkflowDocument("未命名工作流"),
+    createEmptyWorkflowDocument("未命名工作流")
   );
   /** 旧数据（迁移自 flow_data）过不了当前 schema：不能直接喂画布，只能提示重置。 */
   const [dslBroken, setDslBroken] = useState(false);
@@ -96,23 +101,33 @@ export default function WorkflowEditorPage({
   const [selection, setSelection] = useState<EditorSelection | null>(null);
   /** 校验结果默认只显示计数；展开后才在节点上打红框，避免边搭图边被红圈刷屏。 */
   const [showIssues, setShowIssues] = useState(false);
+  const [issues, setIssues] = useState<WorkflowIssue[]>([]);
 
   const [agents, setAgents] = useState<RefOption[]>([]);
   const [tools, setTools] = useState<RefOption[]>([]);
 
   /**
-   * 实时拓扑校验（graph 档：不要求绑定 agentId，但连线必须成立）。
+   * 实时拓扑校验（mode为graph时：不要求绑定 agentId，但连线必须成立）。
    * schema 是前后端共用的纯函数，本地跑一遍即可即时反馈，不必来回打 validate 接口。
    */
-  const issues = useMemo<WorkflowIssue[]>(() => {
-    const parsed = parseWorkflowDocument(doc, "graph");
-    return parsed.ok ? [] : parsed.errors;
+  // fix: 不要实时校验，拖动节点位置信息修改也会频繁触发校验
+  // const issues = useMemo<WorkflowIssue[]>(() => {
+  //   const parsed = parseWorkflowDocument(doc, "graph");
+  //   return parsed.ok ? [] : parsed.errors;
+  // }, [doc]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const parsed = parseWorkflowDocument(doc, "graph");
+      setIssues(parsed.ok ? [] : parsed.errors);
+    }, 500);
+    return () => clearTimeout(timer);
   }, [doc]);
 
   const issueNodeIds = useMemo(() => {
     if (!showIssues) return new Set<string>();
     return new Set(
-      issues.map((issue) => issue.nodeId).filter((v): v is string => Boolean(v)),
+      issues.map((issue) => issue.nodeId).filter((v): v is string => Boolean(v))
     );
   }, [issues, showIssues]);
 
@@ -145,30 +160,27 @@ export default function WorkflowEditorPage({
       setDocDirty(true);
       setSaveMessage(null);
     },
-    [],
+    []
   );
 
-  const handleAddNode = useCallback(
-    (kind: NodeKind, position: XY) => {
-      setDoc((prev) => {
-        const { doc: next, nodeId } = addNode(prev, kind, position);
-        // 新节点顺手选中：拖进来十有八九下一步就是配置它。
-        setSelection({ type: "node", id: nodeId });
-        return next;
-      });
-      setDocDirty(true);
-      setSaveMessage(null);
-      setError(null);
-    },
-    [],
-  );
+  const handleAddNode = useCallback((kind: NodeKind, position: XY) => {
+    setDoc((prev) => {
+      const { doc: next, nodeId } = addNode(prev, kind, position);
+      // 新节点顺手选中：拖进来十有八九下一步就是配置它。
+      setSelection({ type: "node", id: nodeId });
+      return next;
+    });
+    setDocDirty(true);
+    setSaveMessage(null);
+    setError(null);
+  }, []);
 
   /** 面板点击（非拖拽）落点由文档算，不依赖画布视口，见 nextNodePosition 说明。 */
   const handlePaletteClick = useCallback(
     (kind: NodeKind) => {
       handleAddNode(kind, nextNodePosition(doc));
     },
-    [doc, handleAddNode],
+    [doc, handleAddNode]
   );
 
   /** 目录：智能体与显式工具，供 agent / tool 节点绑定。与工作流本身无关，失败不阻塞编辑。 */
@@ -196,7 +208,7 @@ export default function WorkflowEditorPage({
         (agentsRes.data ?? []).map((item) => ({
           id: item.id as string,
           label: (item.name as string) || "未命名智能体",
-        })),
+        }))
       );
       setTools(
         (toolsRes.data ?? []).map((item) => ({
@@ -204,7 +216,7 @@ export default function WorkflowEditorPage({
           label:
             ((item.display_name as string | null) || (item.name as string)) ??
             "未命名工具",
-        })),
+        }))
       );
     }
 
@@ -274,7 +286,7 @@ export default function WorkflowEditorPage({
     };
   }, [id, isNew]);
 
-  // 编译schema ast 到langgraph 
+  // 编译schema ast 到langgraph
   async function handleCompile() {
     if (saving) return;
     const sanitized = sanitizeDocumentForSave(doc);
@@ -292,17 +304,12 @@ export default function WorkflowEditorPage({
     const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
     console.log("compile nextDocument", nextDocument);
 
-    await fetch(
-        `/api/workflow/compile`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            doc: nextDocument
-          }),
-        },
-    );
-
-    
+    await fetch(`/api/workflow/compile`, {
+      method: "POST",
+      body: JSON.stringify({
+        doc: nextDocument,
+      }),
+    });
   }
 
   /**
@@ -449,7 +456,7 @@ export default function WorkflowEditorPage({
               "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
               issues.length === 0
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
-                : "border-amber-500/30 bg-amber-500/10 text-amber-700",
+                : "border-amber-500/30 bg-amber-500/10 text-amber-700"
             )}
             aria-expanded={showIssues}
           >
@@ -465,7 +472,7 @@ export default function WorkflowEditorPage({
               </>
             )}
           </button>
-          <Button onClick={handleCompile} disabled={dirty} > 
+          <Button onClick={handleCompile} disabled={dirty}>
             <Code className="h-4 w-4" />
             编译
           </Button>
@@ -494,7 +501,8 @@ export default function WorkflowEditorPage({
       {dslBroken ? (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-sm text-amber-800">
           <span>
-            这条工作流的 DSL 不符合当前 schema（多为旧 flow_data 迁移数据），已用空图占位。保存会覆盖原数据。
+            这条工作流的 DSL 不符合当前 schema（多为旧 flow_data
+            迁移数据），已用空图占位。保存会覆盖原数据。
           </span>
           <Button variant="outline" size="sm" onClick={resetDoc}>
             重置为空图
