@@ -12,7 +12,7 @@ import type {
   AgentRow,
   AgentToolRow,
   ToolRow,
-} from "@/app/(dashboard)/agents/types";
+} from "@/app/(dashboard)/agents/lib/types";
 import { getRedisCheckpointer } from "@/lib/redis";
 import {
   ensureAgentConversation,

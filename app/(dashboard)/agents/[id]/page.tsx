@@ -24,20 +24,20 @@ import {
   draftFromAgent,
   draftsEqual,
   type AgentDraft,
-} from "../agent-trial-editor";
-import type { AgentRow, AgentToolRow, AgentWithTools, ToolRow } from "../types";
-import { getErrorMessage } from "../utils";
-import { ChatMarkdown } from "../chat-markdown";
+} from "../components/agent-trial-editor";
+import type { AgentRow, AgentToolRow, AgentWithTools, ToolRow } from "../lib/types";
+import { getErrorMessage } from "../lib/utils";
+import { ChatMarkdown } from "../components/chat-markdown";
 import type { ChatSseEvent } from "@/lib/agent-runtime/sse";
-import { ThreadList } from "../thread-list";
-import { ThreadConfigDrawer } from "../thread-config-drawer";
+import { ThreadList } from "../components/thread-list";
+import { ThreadConfigDrawer } from "../components/thread-config-drawer";
 import {
   createEmptyThread,
   threadFromStored,
   type ConversationThread,
   type PlaygroundMessage,
   type StoredThreadListItem,
-} from "../thread-types";
+} from "../lib/thread-types";
 
 /**
  * 解析 SSE 缓冲。fetch 按字节切片，一帧可能横跨两次 read。

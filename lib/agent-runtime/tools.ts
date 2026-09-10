@@ -1,6 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z, type ZodTypeAny } from "zod";
-import type { ToolRow } from "@/app/(dashboard)/agents/types";
+import type { ToolRow } from "@/app/(dashboard)/agents/lib/types";
 
 type JsonSchemaField = {
   type?: string;

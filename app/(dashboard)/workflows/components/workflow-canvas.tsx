@@ -27,7 +27,7 @@ import {
   removeEdges,
   removeNodes,
   type XY,
-} from "../_lib/document";
+} from "../lib/document";
 import type { EditorSelection } from "../types";
 import { NODE_KIND_MIME } from "./node-palette";
 import {

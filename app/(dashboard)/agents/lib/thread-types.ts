@@ -1,4 +1,4 @@
-import type { AgentDraft } from "./agent-trial-editor";
+import type { AgentDraft } from "../components/agent-trial-editor";
 import { MODEL_VALUES } from "./types";
 import { clamp, isModelValue } from "./utils";
 

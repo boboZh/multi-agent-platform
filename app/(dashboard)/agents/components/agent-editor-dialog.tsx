@@ -23,14 +23,14 @@ import {
   type ModelValue,
   type ToolRow,
   type UUID,
-} from "./types";
+} from "../lib/types";
 import {
   clamp,
   formatTemp,
   getErrorMessage,
   isModelValue,
   toolLabel,
-} from "./utils";
+} from "../lib/utils";
 
 type AgentEditorDialogProps = {
   open: boolean;

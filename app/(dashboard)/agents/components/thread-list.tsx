@@ -3,7 +3,7 @@
 import { MessageSquarePlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { ConversationThread } from "./thread-types";
+import type { ConversationThread } from "../lib/thread-types";
 
 type ThreadListProps = {
   threads: ConversationThread[];

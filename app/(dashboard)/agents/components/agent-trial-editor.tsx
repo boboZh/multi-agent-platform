@@ -12,8 +12,8 @@ import {
   type ModelValue,
   type ToolRow,
   type UUID,
-} from "./types";
-import { clamp, formatTemp, isModelValue, toolLabel } from "./utils";
+} from "../lib/types";
+import { clamp, formatTemp, isModelValue, toolLabel } from "../lib/utils";
 
 /**
  * 试运行侧栏的可编辑快照。与 DB 行刻意拆开：

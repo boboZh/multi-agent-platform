@@ -30,14 +30,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { AgentEditorDialog } from "./agent-editor-dialog";
+import { AgentEditorDialog } from "./components/agent-editor-dialog";
 import type {
   AgentRow,
   AgentToolRow,
   AgentWithTools,
   ToolRow,
   UUID,
-} from "./types";
+} from "./lib/types";
 import {
   clamp,
   formatTemp,
@@ -45,7 +45,7 @@ import {
   modelLabel,
   promptSnippet,
   toolLabel,
-} from "./utils";
+} from "./lib/utils";
 
 /**
  * 智能体目录：工作流画布拖拽前的配置入口。

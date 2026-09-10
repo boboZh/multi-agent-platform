@@ -3,10 +3,10 @@
 import { useEffect } from "react";
 import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { MODEL_LABELS } from "./types";
-import { formatTemp, toolLabel } from "./utils";
-import type { ToolRow } from "./types";
-import type { ConversationThread } from "./thread-types";
+import { MODEL_LABELS } from "../lib/types";
+import { formatTemp, toolLabel } from "../lib/utils";
+import type { ToolRow } from "../lib/types";
+import type { ConversationThread } from "../lib/thread-types";
 
 type ThreadConfigDrawerProps = {
   open: boolean;

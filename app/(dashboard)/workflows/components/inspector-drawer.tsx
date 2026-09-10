@@ -10,14 +10,14 @@ import type {
   WorkflowDocument,
   WorkflowNodeData,
 } from "@/lib/workflow-dsl/schema";
-import { MODEL_LABELS, MODEL_VALUES } from "../../agents/types";
+import { MODEL_LABELS, MODEL_VALUES } from "../../agents/lib/types";
 import {
   addConditionBranch,
   removeConditionBranch,
   renameConditionBranch,
   setConditionBranchLabel,
   updateNode,
-} from "../_lib/document";
+} from "../lib/document";
 import type { EditorSelection } from "../types";
 
 /**

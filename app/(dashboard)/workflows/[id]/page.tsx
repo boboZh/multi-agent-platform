@@ -33,13 +33,13 @@ import {
   getErrorMessage,
   summarizeFlowDsl,
 } from "../utils";
-import { addNode, nextNodePosition, sanitizeDocumentForSave, type XY } from "../_lib/document";
-import { NodePalette } from "../_components/node-palette";
-import { WorkflowCanvas } from "../_components/workflow-canvas";
+import { addNode, nextNodePosition, sanitizeDocumentForSave, type XY } from "../lib/document";
+import { NodePalette } from "../components/node-palette";
+import { WorkflowCanvas } from "../components/workflow-canvas";
 import {
   InspectorDrawer,
   type RefOption,
-} from "../_components/inspector-drawer";
+} from "../components/inspector-drawer";
 
 /**
  * 工作流编辑器：新增与编辑的唯一入口（列表页只负责跳进来）。
