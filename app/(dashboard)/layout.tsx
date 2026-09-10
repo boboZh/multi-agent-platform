@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -21,6 +21,17 @@ export default function DashboardLayout({
 }) {
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const pathname = usePathname();
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("sidebarExpanded");
+    if (stored !== null) {
+      setSidebarExpanded(stored === "true");
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("sidebarExpanded", sidebarExpanded.toString());
+  }, [sidebarExpanded]);
 
   const menuItems = [
     {
@@ -45,21 +56,19 @@ export default function DashboardLayout({
       <aside
         className={cn(
           "flex shrink-0 flex-col justify-between border-r border-zinc-200 bg-white transition-[width,padding] duration-200 ease-out",
-          sidebarExpanded ? "w-64 p-4" : "w-16 items-center px-2 py-3",
+          sidebarExpanded ? "w-64 p-4" : "w-16 items-center px-2 py-3"
         )}
       >
         <div
           className={cn(
             "flex flex-col",
-            sidebarExpanded ? "space-y-6" : "items-center gap-3",
+            sidebarExpanded ? "space-y-6" : "items-center gap-3"
           )}
         >
           <div
             className={cn(
               "flex items-center border-b border-zinc-100",
-              sidebarExpanded
-                ? "gap-2 px-2 py-1.5 pb-4"
-                : "flex-col gap-2 pb-3",
+              sidebarExpanded ? "gap-2 px-2 py-1.5 pb-4" : "flex-col gap-2 pb-3"
             )}
           >
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-xs font-bold text-white">
@@ -88,7 +97,7 @@ export default function DashboardLayout({
           <nav
             className={cn(
               "space-y-1",
-              !sidebarExpanded && "flex flex-col items-center",
+              !sidebarExpanded && "flex flex-col items-center"
             )}
           >
             {menuItems.map((item) => {
@@ -107,7 +116,7 @@ export default function DashboardLayout({
                       : "h-9 w-9 justify-center",
                     active
                       ? "bg-primary/10 text-primary"
-                      : "text-zinc-600 hover:bg-zinc-100/80 hover:text-zinc-900",
+                      : "text-zinc-600 hover:bg-zinc-100/80 hover:text-zinc-900"
                   )}
                 >
                   {item.icon}
@@ -129,7 +138,7 @@ export default function DashboardLayout({
             "border-t border-zinc-100 opacity-50",
             sidebarExpanded
               ? "pointer-events-none pt-4"
-              : "flex justify-center pt-3",
+              : "flex justify-center pt-3"
           )}
         >
           {sidebarExpanded ? (
