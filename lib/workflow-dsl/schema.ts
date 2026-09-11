@@ -274,6 +274,7 @@ export type AgentNodeConfig = z.infer<typeof agentConfigSchema>;
 export type ToolNodeConfig = z.infer<typeof toolConfigSchema>;
 export type ConditionNodeConfig = z.infer<typeof conditionConfigSchema>;
 export type HumanReviewNodeConfig = z.infer<typeof humanReviewConfigSchema>;
+export type ReviewFormField = z.infer<typeof reviewFormFieldSchema>;
 
 export type WorkflowIssue = {
   message: string;

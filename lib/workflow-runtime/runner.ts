@@ -1,0 +1,269 @@
+import {
+  AIMessage,
+  HumanMessage,
+  type BaseMessage,
+} from "@langchain/core/messages";
+import { Command, isGraphInterrupt } from "@langchain/langgraph";
+import { compileWorkflow, type CompiledWorkflowApp } from "@/lib/workflow-dsl/compile";
+import type { WorkflowDocument } from "@/lib/workflow-dsl/schema";
+import type { FlowRunRow, FlowRunStatus } from "@/lib/workflow-dsl/tables";
+import { mapStreamEvent } from "@/lib/agent-runtime/sse";
+import { getRedisCheckpointer } from "@/lib/redis";
+import {
+  appendSseBuffer,
+  shouldPersistEvent,
+  type PendingRunCommand,
+} from "@/lib/workflow-runtime/buffer";
+import {
+  interruptPayloadFromError,
+  interruptPayloadFromState,
+} from "@/lib/workflow-runtime/interrupt";
+import { insertPersistedEvent, patchFlowRun } from "@/lib/workflow-runtime/persist";
+import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
+
+export type RunEmitter = (event: WorkflowSseEvent) => Promise<void>;
+
+export async function emitAndPersist(
+  runId: string,
+  event: WorkflowSseEvent,
+  onEvent?: RunEmitter,
+) {
+  const buffered = await appendSseBuffer(runId, event);
+  if (shouldPersistEvent(event)) {
+    try {
+      await insertPersistedEvent(runId, buffered.id, event);
+    } catch {
+      // 时间线丢一条粗事件不应把正在跑的图杀掉
+    }
+  }
+  await onEvent?.(event);
+  return buffered;
+}
+
+function toMessages(raw: unknown): BaseMessage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: BaseMessage[] = [];
+  for (const item of raw) {
+    if (item && typeof item === "object" && typeof (item as BaseMessage)._getType === "function") {
+      out.push(item as BaseMessage);
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const content =
+      typeof rec.content === "string"
+        ? rec.content
+        : rec.content == null
+          ? ""
+          : JSON.stringify(rec.content);
+    const role = String(rec.role ?? rec.type ?? "user");
+    if (role === "assistant" || role === "ai") {
+      out.push(new AIMessage(content));
+    } else if (content.trim()) {
+      out.push(new HumanMessage(content));
+    }
+  }
+  return out;
+}
+
+function graphInputFromStart(input: {
+  messages?: unknown[];
+  vars?: Record<string, unknown>;
+}) {
+  return {
+    messages: toMessages(input.messages),
+    vars: input.vars ?? {},
+    lastAgentText: "",
+  };
+}
+
+function isUserNode(name: string | undefined, nodeIds: Set<string>) {
+  return Boolean(name && nodeIds.has(name));
+}
+
+function textFromChainOutput(output: unknown): string | undefined {
+  if (!output || typeof output !== "object") return undefined;
+  const rec = output as Record<string, unknown>;
+  if (typeof rec.lastAgentText === "string" && rec.lastAgentText.trim()) {
+    return rec.lastAgentText;
+  }
+  return undefined;
+}
+
+async function compilePublished(
+  dsl: unknown,
+  userId: string,
+): Promise<CompiledWorkflowApp> {
+  const checkpointer = await getRedisCheckpointer();
+  const compiled = await compileWorkflow(dsl, { checkpointer, userId });
+  if (!compiled.ok) {
+    throw new Error(compiled.errors[0]?.message ?? "工作流编译失败");
+  }
+  return compiled.app;
+}
+
+/**
+ * 真正跑图。入参：flow_runs 行 + 发布快照 DSL + 待执行命令。
+ * 步骤：compile → streamEvents → 写状态/interrupt → 终态 completed/failed/interrupted。
+ * 同一 thread_id 上 resume/retry，不另开 Redis 会话。
+ */
+export async function executeWorkflowRun(options: {
+  run: FlowRunRow;
+  dsl: WorkflowDocument;
+  command: PendingRunCommand;
+  userId: string;
+  onEvent?: RunEmitter;
+}): Promise<FlowRunRow> {
+  const { run, dsl, command, userId, onEvent } = options;
+  const nodeIds = new Set(dsl.nodes.map((node) => node.id));
+  const emit = (event: WorkflowSseEvent) =>
+    emitAndPersist(run.id, event, onEvent);
+
+  let currentNodeId: string | undefined;
+  await patchFlowRun(run.id, {
+    status: "running",
+    error: null,
+    interrupt_payload: null,
+  });
+  await emit({ type: "run_status", status: "running" });
+
+  const app = await compilePublished(dsl, userId);
+  const configurable: Record<string, string> = { thread_id: run.thread_id };
+  if (command.kind === "retry") {
+    configurable.checkpoint_id = command.checkpointId;
+  }
+
+  let graphInput: Parameters<CompiledWorkflowApp["streamEvents"]>[0];
+  if (command.kind === "start") {
+    graphInput = graphInputFromStart(command.input);
+  } else if (command.kind === "resume") {
+    graphInput = new Command({ resume: command.resume });
+  } else {
+    graphInput = null;
+  }
+
+  try {
+    const eventStream = await app.streamEvents(graphInput, {
+      version: "v2",
+      configurable,
+    });
+
+    for await (const raw of eventStream) {
+      const name = typeof raw.name === "string" ? raw.name : undefined;
+      if (raw.event === "on_chain_start" && isUserNode(name, nodeIds)) {
+        currentNodeId = name;
+        await emit({ type: "node_start", nodeId: name as string });
+        await emit({
+          type: "run_status",
+          status: "running",
+          currentNodeId: name,
+        });
+      }
+      if (raw.event === "on_chain_end" && isUserNode(name, nodeIds)) {
+        await emit({
+          type: "node_end",
+          nodeId: name as string,
+          text: textFromChainOutput(raw.data?.output),
+        });
+      }
+
+      const mapped = mapStreamEvent(raw);
+      if (mapped?.type === "token") {
+        await emit({
+          type: "token",
+          nodeId: currentNodeId,
+          content: mapped.content,
+        });
+      } else if (mapped?.type === "tool_start") {
+        await emit({
+          type: "tool_start",
+          nodeId: currentNodeId,
+          name: mapped.name,
+          input: mapped.input,
+          runId: mapped.runId,
+        });
+      } else if (mapped?.type === "tool_end") {
+        await emit({
+          type: "tool_end",
+          nodeId: currentNodeId,
+          name: mapped.name,
+          output: mapped.output,
+          runId: mapped.runId,
+        });
+      }
+    }
+
+    const state = await app.getState({ configurable: { thread_id: run.thread_id } });
+    const interrupt = interruptPayloadFromState({
+      tasks: state.tasks,
+    });
+    if (interrupt) {
+      const next = await patchFlowRun(run.id, {
+        status: "interrupted",
+        interrupt_payload: interrupt,
+      });
+      await emit({ type: "interrupt", payload: interrupt });
+      await emit({
+        type: "run_status",
+        status: "interrupted",
+        currentNodeId: interrupt.nodeId,
+      });
+      await emit({ type: "done" });
+      return next;
+    }
+
+    const values = (state.values ?? {}) as {
+      vars?: Record<string, unknown>;
+      lastAgentText?: string;
+    };
+    const next = await patchFlowRun(run.id, {
+      status: "completed",
+      output: {
+        vars: values.vars ?? {},
+        lastAgentText: values.lastAgentText ?? "",
+      },
+      interrupt_payload: null,
+      error: null,
+    });
+    await emit({ type: "run_status", status: "completed" });
+    await emit({ type: "done" });
+    return next;
+  } catch (err) {
+    if (isGraphInterrupt(err)) {
+      const payload = interruptPayloadFromError(err);
+      if (payload) {
+        const next = await patchFlowRun(run.id, {
+          status: "interrupted",
+          interrupt_payload: payload,
+        });
+        await emit({ type: "interrupt", payload });
+        await emit({
+          type: "run_status",
+          status: "interrupted",
+          currentNodeId: payload.nodeId,
+        });
+        await emit({ type: "done" });
+        return next;
+      }
+    }
+    const message = err instanceof Error ? err.message : "工作流执行失败";
+    const next = await patchFlowRun(run.id, {
+      status: "failed",
+      error: message,
+      interrupt_payload: null,
+    });
+    await emit({ type: "error", message, nodeId: currentNodeId });
+    await emit({ type: "run_status", status: "failed", currentNodeId });
+    await emit({ type: "done" });
+    return next;
+  }
+}
+
+export function isTerminalStatus(status: FlowRunStatus) {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "interrupted"
+  );
+}

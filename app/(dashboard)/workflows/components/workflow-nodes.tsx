@@ -39,6 +39,24 @@ export const NodeRefNamesContext = createContext<ReadonlyMap<string, string>>(
   new Map(),
 );
 
+/**
+ * 运行监控画布高亮。默认全空，编辑器不传就不会有脉冲边框。
+ * 不塞进 node.data：那是 DSL，运行态一写进去会和编辑器文档搅在一起。
+ */
+export type RunNodeHighlight = {
+  currentNodeId: string | null;
+  doneNodeIds: ReadonlySet<string>;
+  failedNodeId: string | null;
+  interruptedNodeId: string | null;
+};
+
+export const RunHighlightContext = createContext<RunNodeHighlight>({
+  currentNodeId: null,
+  doneNodeIds: new Set(),
+  failedNodeId: null,
+  interruptedNodeId: null,
+});
+
 const KIND_ICONS: Record<NodeKind, LucideIcon> = {
   start: Play,
   end: CircleStop,
@@ -88,7 +106,12 @@ function summaryOf(
 function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData>) {
   const issues = useContext(NodeIssuesContext);
   const refNames = useContext(NodeRefNamesContext);
+  const highlight = useContext(RunHighlightContext);
   const hasIssue = issues.has(id);
+  const isCurrent = highlight.currentNodeId === id;
+  const isDone = highlight.doneNodeIds.has(id);
+  const isFailed = highlight.failedNodeId === id;
+  const isInterrupted = highlight.interruptedNodeId === id;
   const Icon = KIND_ICONS[data.kind];
   const summary = summaryOf(data, refNames);
 
@@ -105,6 +128,10 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
           ? "border-primary ring-2 ring-primary/30"
           : "border-foreground/10",
         hasIssue && !selected && "border-destructive/60 ring-2 ring-destructive/20",
+        isCurrent && "animate-pulse border-blue-500 ring-2 ring-blue-400/40",
+        isDone && !isCurrent && "border-emerald-500/70",
+        isFailed && "border-destructive ring-2 ring-destructive/30",
+        isInterrupted && "border-amber-500 ring-2 ring-amber-400/40",
       )}
     >
       {spec.targets > 0 ? (

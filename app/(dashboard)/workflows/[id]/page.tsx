@@ -12,6 +12,7 @@ import {
   Save,
   TriangleAlert,
   Rocket,
+  Play,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -83,6 +84,7 @@ export default function WorkflowEditorPage({
   const [saving, setSaving] = useState(false);
   const [compiling, setCompiling] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -386,6 +388,43 @@ export default function WorkflowEditorPage({
   }
 
   /**
+   * 运行已发布版本：insert flow_runs 后跳监控详情，SSE 在那边拉起图。
+   * 未发布或未保存不能跑，否则会拿草稿 DSL，和发布钉死的版本对不上。
+   */
+  async function handleRun() {
+    if (isNew || compiling || publishing || saving || running) return;
+    if (row?.status !== "published") {
+      setError("请先发布工作流再运行。");
+      return;
+    }
+    if (dirty) {
+      setError("有未保存的修改，请先保存并发布后再运行。");
+      return;
+    }
+    setRunning(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowId: id, input: { vars: {} } }),
+      });
+      const payload = (await response.json()) as
+        | { ok: true; run: { id: string } }
+        | { ok: false; errors?: WorkflowIssue[] };
+      if (!payload.ok) {
+        setError(payload.errors?.[0]?.message ?? "启动运行失败。");
+        return;
+      }
+      router.push(`/runs/${payload.run.id}`);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e) ?? "启动运行失败。");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  /**
    * 保存。
    *
    * 步骤：
@@ -558,6 +597,22 @@ export default function WorkflowEditorPage({
               <>
                 <Code className="h-4 w-4" />
                 编译
+              </>
+            )}
+          </Button>
+          <Button
+            onClick={handleRun}
+            disabled={isNew || loading || compiling || publishing || running || row?.status !== "published"}
+          >
+            {running ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                启动中
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4" />
+                运行
               </>
             )}
           </Button>

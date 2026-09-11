@@ -10,6 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   FlipHorizontal,
+  Activity,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,11 @@ export default function DashboardLayout({
       name: "智能体工作流",
       href: "/workflows",
       icon: <GitBranch size={18} />,
+    },
+    {
+      name: "运行监控",
+      href: "/runs",
+      icon: <Activity size={18} />,
     },
     {
       name: "flow-demo",
