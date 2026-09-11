@@ -11,6 +11,7 @@ import {
   Loader2,
   Save,
   TriangleAlert,
+  Rocket,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -80,6 +81,8 @@ export default function WorkflowEditorPage({
 
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
+  const [compiling, setCompiling] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -291,28 +294,95 @@ export default function WorkflowEditorPage({
 
   // 编译schema ast 到langgraph
   async function handleCompile() {
-    if (saving) return;
+    if (compiling || publishing || saving) return;
     const sanitized = sanitizeDocumentForSave(doc);
     if (!sanitized.ok) {
       setError(sanitized.reason);
       return;
     }
 
-    setSaving(true);
+    setCompiling(true);
     setError(null);
     setSaveMessage(null);
-    const mockUserId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
     const name = form.name.trim() || "未命名工作流";
-    const description = form.description.trim();
     const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
-    console.log("compile nextDocument", nextDocument);
 
-    await fetch(`/api/workflow/compile`, {
-      method: "POST",
-      body: JSON.stringify({
-        doc: nextDocument,
-      }),
-    });
+    try {
+      const response = await fetch("/api/workflow/compile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc: nextDocument }),
+      });
+      const payload = (await response.json()) as
+        | { ok: true }
+        | { ok: false; errors?: WorkflowIssue[] };
+      if (!payload.ok) {
+        const nextIssues = payload.errors ?? [];
+        setIssues(nextIssues);
+        setShowIssues(true);
+        setError(
+          nextIssues[0]?.message ?? "编译未通过。",
+        );
+        return;
+      }
+      setIssues([]);
+      setSaveMessage("编译通过，可以发布。");
+    } catch (e: unknown) {
+      setError(getErrorMessage(e) ?? "编译请求失败。");
+    } finally {
+      setCompiling(false);
+    }
+  }
+
+  /**
+   * 发布：dry-run 编译通过后把当前 DSL 钉进 flow_versions。
+   * 未保存过的 /workflows/new 没有 flow id，不能发布。
+   */
+  async function handlePublish() {
+    if (isNew || compiling || publishing || saving) return;
+    const sanitized = sanitizeDocumentForSave(doc);
+    if (!sanitized.ok) {
+      setError(sanitized.reason);
+      return;
+    }
+
+    setPublishing(true);
+    setError(null);
+    setSaveMessage(null);
+    const name = form.name.trim() || "未命名工作流";
+    const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
+
+    try {
+      const response = await fetch("/api/workflow/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowId: id, doc: nextDocument }),
+      });
+      const payload = (await response.json()) as
+        | { ok: true; flow: FlowRecord; version: number }
+        | { ok: false; errors?: WorkflowIssue[] };
+      if (!payload.ok) {
+        const nextIssues = payload.errors ?? [];
+        setIssues(nextIssues);
+        setShowIssues(true);
+        setError(nextIssues[0]?.message ?? "发布未通过。");
+        return;
+      }
+      const flow = payload.flow;
+      setRow(flow);
+      setDoc(nextDocument);
+      const nextForm = formFromRow(flow);
+      setForm(nextForm);
+      setSavedForm(nextForm);
+      setDslBroken(false);
+      setDocDirty(false);
+      setIssues([]);
+      setSaveMessage(`已发布 v${payload.version}。`);
+    } catch (e: unknown) {
+      setError(getErrorMessage(e) ?? "发布请求失败。");
+    } finally {
+      setPublishing(false);
+    }
   }
 
   /**
@@ -475,11 +545,39 @@ export default function WorkflowEditorPage({
               </>
             )}
           </button>
-          <Button onClick={handleCompile} disabled={dirty}>
-            <Code className="h-4 w-4" />
-            编译
+          <Button
+            onClick={handleCompile}
+            disabled={loading || compiling || publishing}
+          >
+            {compiling ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                编译中
+              </>
+            ) : (
+              <>
+                <Code className="h-4 w-4" />
+                编译
+              </>
+            )}
           </Button>
-          <Button onClick={handleSave} disabled={saving || loading || !dirty}>
+          <Button
+            onClick={handlePublish}
+            disabled={isNew || loading || compiling || publishing}
+          >
+            {publishing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                发布中
+              </>
+            ) : (
+              <>
+                <Rocket className="h-4 w-4" />
+                发布
+              </>
+            )}
+          </Button>
+          <Button onClick={handleSave} disabled={saving || compiling || publishing || loading || !dirty}>
             {saving ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />

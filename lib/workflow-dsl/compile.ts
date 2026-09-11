@@ -518,6 +518,26 @@ export async function compileWorkflow(
   return { ok: true, document: doc, app };
 }
 
+/**
+ * dry-run：只验证「能编出图」，不 invoke、不把 StateGraph 塞进 JSON。
+ * 校验/发布 API 走这条，避免把不可序列化的 compiled app 返回给浏览器。
+ */
+export async function dryRunCompile(
+  input: unknown,
+  options: CompileOptions = {},
+): Promise<
+  | { ok: true; nodeCount: number; edgeCount: number }
+  | CompileFailure
+> {
+  const result = await compileWorkflow(input, options);
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    nodeCount: result.document.nodes.length,
+    edgeCount: result.document.edges.length,
+  };
+}
+
 /** 与骨架同名的入口，方便 API 层直接 `compile(doc)`。 */
 export async function compile(
   input: unknown,

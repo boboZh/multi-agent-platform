@@ -1,5 +1,8 @@
-import { HumanMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { RunnableLambda } from "@langchain/core/runnables";
 import { describe, expect, it } from "vitest";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { AgentRow, ToolRow } from "@/app/(dashboard)/agents/lib/types";
 import {
   DEFAULT_AGENT_OUTPUT_KEY,
   NODE_TYPE_BY_KIND,
@@ -11,7 +14,7 @@ import {
   parseWorkflowDocument,
   type WorkflowDocument,
 } from "@/lib/workflow-dsl/schema";
-import { compileWorkflow } from "@/lib/workflow-dsl/compile";
+import { compileWorkflow, dryRunCompile } from "@/lib/workflow-dsl/compile";
 import {
   buildBranchPathMap,
   evaluateExpressionRoute,
@@ -21,7 +24,6 @@ import {
   type WorkflowGraphState,
 } from "@/lib/workflow-dsl/compile-utils";
 import { END } from "@langchain/langgraph";
-import type { ToolRow } from "@/app/(dashboard)/agents/lib/types";
 
 const AGENT_UUID = "11111111-1111-4111-8111-111111111111";
 const TOOL_UUID = "22222222-2222-4222-8222-222222222222";
@@ -38,6 +40,98 @@ function node(kind: NodeKind, id: string) {
     type: NODE_TYPE_BY_KIND[kind],
     position: { x: 0, y: 0 },
     data: createNodeData(kind),
+  };
+}
+
+function agentRow(): AgentRow {
+  return {
+    id: AGENT_UUID,
+    user_id: "00000000-0000-4000-8000-000000000000",
+    name: "客服",
+    system_prompt: "只输出 need_human 或 ok。",
+    model_name: "gpt-4o",
+    temperature: 0,
+    created_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * 脚本化模型：不打真实 API。createReactAgent 无工具时只会 invoke 一次；
+ * bindTools 返回自身，避免空工具列表时还去找 ChatOpenAI 的实现。
+ */
+function scriptedCreateModel(replies: string[]) {
+  const queue = [...replies];
+  const llm = RunnableLambda.from(
+    async () => new AIMessage(queue.shift() ?? ""),
+  );
+  Object.assign(llm, { bindTools: () => llm });
+  return () => llm as unknown as BaseChatModel;
+}
+
+function agentThenConditionDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "Start-Agent-Condition-End",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      {
+        ...node("agent", "n_agent"),
+        data: {
+          kind: "agent" as const,
+          label: "智能体",
+          config: { agentId: AGENT_UUID, outputKey: DEFAULT_AGENT_OUTPUT_KEY },
+        },
+      },
+      {
+        id: "n_cond",
+        type: NODE_TYPE_BY_KIND.condition,
+        position: { x: 0, y: 0 },
+        data: {
+          kind: "condition" as const,
+          label: "条件",
+          config: {
+            mode: "expression" as const,
+            expression: 'state.lastAgentText == "need_human"',
+            branches: [
+              { key: "yes", label: "是" },
+              { key: "no", label: "否" },
+            ],
+            defaultBranch: "no",
+          },
+        },
+      },
+      node("end", "n_end_yes"),
+      node("end", "n_end_no"),
+    ],
+    edges: [
+      {
+        id: "e_start_agent",
+        source: "n_start",
+        target: "n_agent",
+        data: { kind: "normal" },
+      },
+      {
+        id: "e_agent_cond",
+        source: "n_agent",
+        target: "n_cond",
+        data: { kind: "normal" },
+      },
+      {
+        id: "e_yes",
+        source: "n_cond",
+        target: "n_end_yes",
+        sourceHandle: "yes",
+        data: { kind: "branch", branchKey: "yes" },
+      },
+      {
+        id: "e_no",
+        source: "n_cond",
+        target: "n_end_no",
+        sourceHandle: "no",
+        data: { kind: "branch", branchKey: "no" },
+      },
+    ],
   };
 }
 
@@ -395,5 +489,56 @@ describe("compileWorkflow", () => {
     expect(compiled.ok).toBe(false);
     if (compiled.ok) return;
     expect(compiled.errors[0]?.message).toContain("checkpointer");
+  });
+
+  it("Start→Agent→Condition(expression)→End：mock 模型输出决定分支", async () => {
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(agentThenConditionDoc(), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["need_human"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const yes = await compiled.app.invoke({
+      messages: [new HumanMessage("这个单要不要人工？")],
+      vars: {},
+    });
+    expect(yes.lastAgentText).toBe("need_human");
+    expect(yes._route).toBe("yes");
+  });
+
+  it("同一张图 mock 输出非 need_human 时走 defaultBranch no", async () => {
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(agentThenConditionDoc(), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["ok"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const no = await compiled.app.invoke({
+      messages: [new HumanMessage("正常咨询")],
+      vars: {},
+    });
+    expect(no.lastAgentText).toBe("ok");
+    expect(no._route).toBe("no");
+  });
+
+  it("dryRunCompile 成功时只返回计数，失败时带回结构化错误", async () => {
+    const ok = await dryRunCompile(expressionDoc(), {
+      resources: { agents: new Map(), tools: new Map() },
+    });
+    expect(ok).toEqual({ ok: true, nodeCount: 4, edgeCount: 3 });
+
+    const fail = await dryRunCompile(
+      { schemaVersion: 1, name: "坏" },
+      { resources: { agents: new Map(), tools: new Map() } },
+    );
+    expect(fail.ok).toBe(false);
+    if (fail.ok) return;
+    expect(fail.errors.length).toBeGreaterThan(0);
   });
 });
