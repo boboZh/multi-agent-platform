@@ -116,11 +116,14 @@ export default function WorkflowEditorPage({
   //   return parsed.ok ? [] : parsed.errors;
   // }, [doc]);
 
+  // 防抖，500ms后校验
   useEffect(() => {
     const timer = setTimeout(() => {
       const parsed = parseWorkflowDocument(doc, "graph");
       setIssues(parsed.ok ? [] : parsed.errors);
     }, 500);
+    // 500ms内doc又变了（比如用户还在拖拽），则清除旧定时器重新定时
+    // 保证拖拽过程中不会触发高耗时parseWorkflowDocument
     return () => clearTimeout(timer);
   }, [doc]);
 

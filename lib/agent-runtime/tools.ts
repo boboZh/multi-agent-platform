@@ -32,15 +32,18 @@ function zodFromConnectionConfig(config: unknown) {
 
 async function executeKnownTool(
   name: string,
-  input: Record<string, unknown>,
+  input: Record<string, unknown>
 ): Promise<string> {
   if (name === "get_weather" || name.includes("weather")) {
     const city = String(input.city ?? input.location ?? "杭州");
     const res = await fetch(
-      `https://wttr.in/${encodeURIComponent(city)}?format=j1`,
+      `https://wttr.in/${encodeURIComponent(city)}?format=j1`
     );
     if (!res.ok) {
-      return JSON.stringify({ city, error: `Weather lookup failed (${res.status})` });
+      return JSON.stringify({
+        city,
+        error: `Weather lookup failed (${res.status})`,
+      });
     }
     const data = (await res.json()) as {
       current_condition?: Array<{
@@ -59,7 +62,7 @@ async function executeKnownTool(
   if (name === "web_search" || name.includes("search")) {
     const query = String(input.query ?? input.q ?? "");
     const res = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`,
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`
     );
     if (!res.ok) {
       return JSON.stringify({ query, error: `Search failed (${res.status})` });
@@ -80,9 +83,14 @@ async function executeKnownTool(
     });
   }
 
-  return JSON.stringify({ tool: name, input, note: "No live executor; echoing input." });
+  return JSON.stringify({
+    tool: name,
+    input,
+    note: "No live executor; echoing input.",
+  });
 }
 
+// 遍历tools，通过tool（）函数动态包裹这些工具，方便喂给reactAgent
 export function buildLangChainTools(tools: ToolRow[]) {
   return tools.map((row) => {
     const schema = zodFromConnectionConfig(row.connection_config);
@@ -96,7 +104,7 @@ export function buildLangChainTools(tools: ToolRow[]) {
           row.display_name?.trim() ||
           `Execute tool ${row.name}`,
         schema,
-      },
+      }
     );
   });
 }
