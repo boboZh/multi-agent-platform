@@ -10,6 +10,46 @@ export type ReducedRunEvents = {
 };
 
 /**
+ * Last-Event-ID 已见过的帧直接丢，避免重连把同一段 token 再灌进 store 撑爆内存。
+ */
+export function shouldSkipSseEvent(lastEventId: number, incomingId: unknown): boolean {
+  if (typeof incomingId !== "number" || !Number.isInteger(incomingId) || incomingId < 1) {
+    return false;
+  }
+  if (typeof lastEventId !== "number" || !Number.isFinite(lastEventId)) {
+    return false;
+  }
+  return incomingId <= lastEventId;
+}
+
+/**
+ * 相邻同节点 token 拼成一条，时间线不要为每个字挂一个 li（否则 600 字就会卡死主线程）。
+ */
+export function appendTimelineEvent(
+  events: WorkflowSseEvent[],
+  event: WorkflowSseEvent,
+): WorkflowSseEvent[] {
+  if (!Array.isArray(events)) return [event];
+  if (event.type !== "token") return [...events, event];
+  const prev = events.at(-1);
+  if (
+    prev &&
+    prev.type === "token" &&
+    prev.nodeId === event.nodeId &&
+    typeof prev.content === "string" &&
+    typeof event.content === "string"
+  ) {
+    const next = events.slice(0, -1);
+    next.push({
+      ...prev,
+      content: prev.content + event.content,
+    });
+    return next;
+  }
+  return [...events, event];
+}
+
+/**
  * 把 SSE / 落库事件压成控制台要的派生态。
  * 乱序 tool_end、interrupt 之后还来 token 都要吞掉而不是把 status 改回去。
  */

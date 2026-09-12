@@ -123,8 +123,9 @@ export async function GET(
         const deadline = Date.now() + 55_000;
         while (!closed && Date.now() < deadline) {
           if (request.signal.aborted) break;
-          // 挂起与让步：每秒钟醒来看一眼（看看用户有没有断开，看看截止时间到了没），然后立刻进入休眠，把 CPU 线程让给后台的 Redis 监听器。这就保证了在“卡住”主流程的同时，数据依然能顺畅地通过 controller.enqueue 推送给前端。
-          await sleep(1000);
+          // 注释帧保活，避免空闲时浏览器把连接当死链打 onerror。
+          controller.enqueue(encoder.encode(`: ping\n\n`));
+          await sleep(15_000);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "SSE 失败";

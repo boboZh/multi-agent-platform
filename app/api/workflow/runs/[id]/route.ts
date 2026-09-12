@@ -3,6 +3,7 @@ import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 /**
  * 获取运行详情，包括运行状态、工作流定义、事件列表
  * @param _request

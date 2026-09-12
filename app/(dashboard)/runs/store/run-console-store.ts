@@ -8,6 +8,10 @@ import type {
 } from "@/lib/workflow-dsl/tables";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 import type { NodeStateView } from "@/lib/workflow-runtime/node-state";
+import {
+  appendTimelineEvent,
+  shouldSkipSseEvent,
+} from "@/app/(dashboard)/runs/lib/event-reducer";
 
 export type RunConnection = "idle" | "streaming" | "reconnecting";
 
@@ -61,8 +65,11 @@ export const useRunConsoleStore = create<RunConsoleState>((set) => ({
     }),
   applyEvent: (event, eventId) =>
     set((state) => {
+      if (shouldSkipSseEvent(state.lastEventId, eventId)) {
+        return state;
+      }
       const next: Partial<RunConsoleState> = {
-        events: [...state.events, event],
+        events: appendTimelineEvent(state.events, event),
         lastEventId:
           typeof eventId === "number" && eventId > state.lastEventId
             ? eventId

@@ -2,9 +2,9 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { RunCanvas } from "@/app/(dashboard)/runs/components/run-canvas";
 import { RunConsoleLayout } from "@/app/(dashboard)/runs/components/run-console-layout";
 import { RunEventTimeline } from "@/app/(dashboard)/runs/components/run-event-timeline";
 import { RunInterruptForm } from "@/app/(dashboard)/runs/components/run-interrupt-form";
@@ -18,6 +18,14 @@ import type { FlowRunRow } from "@/lib/workflow-dsl/tables";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 import { isWorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 import type { NodeStateView } from "@/lib/workflow-runtime/node-state";
+
+const RunCanvas = dynamic(
+  () =>
+    import("@/app/(dashboard)/runs/components/run-canvas").then(
+      (mod) => mod.RunCanvas,
+    ),
+  { ssr: false },
+);
 
 type Snapshot = {
   ok: true;
@@ -93,30 +101,58 @@ export default function RunConsolePage({
 
   useEffect(() => {
     if (!run || !liveStatuses(status)) return;
-    const after = useRunConsoleStore.getState().lastEventId;
-    const url =
-      after > 0
-        ? `/api/workflow/runs/${id}/events?after=${after}`
-        : `/api/workflow/runs/${id}/events`;
-    const source = new EventSource(url);
-    setConnection("streaming");
-    source.onmessage = (message) => {
-      try {
-        const parsed: unknown = JSON.parse(message.data);
-        if (!isWorkflowSseEvent(parsed)) return;
-        const eventId = Number.parseInt(message.lastEventId, 10);
-        applyEvent(parsed, Number.isFinite(eventId) ? eventId : undefined);
-      } catch {
-        // 单帧坏 JSON 忽略
-      }
+    let stopped = false;
+    let source: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+
+    const open = () => {
+      if (stopped) return;
+      const after = useRunConsoleStore.getState().lastEventId;
+      const url =
+        after > 0
+          ? `/api/workflow/runs/${id}/events?after=${after}`
+          : `/api/workflow/runs/${id}/events`;
+      const es = new EventSource(url);
+      source = es;
+      setConnection("streaming");
+      es.onmessage = (message) => {
+        attempt = 0;
+        try {
+          const parsed: unknown = JSON.parse(message.data);
+          if (!isWorkflowSseEvent(parsed)) return;
+          const eventId = Number.parseInt(message.lastEventId, 10);
+          applyEvent(parsed, Number.isFinite(eventId) ? eventId : undefined);
+          if (parsed.type === "done") {
+            stopped = true;
+            es.close();
+            setConnection("idle");
+          }
+        } catch {
+          // 单帧坏 JSON 忽略
+        }
+      };
+      es.onerror = () => {
+        if (stopped) return;
+        // CONNECTING：浏览器正在自带重连，不要 close 再 new，否则 /events 编译请求会叠成进程风暴。
+        if (es.readyState === EventSource.CONNECTING) {
+          setConnection("reconnecting");
+          return;
+        }
+        es.close();
+        source = null;
+        setConnection("reconnecting");
+        const delay = Math.min(2000 * 2 ** attempt, 15_000);
+        attempt += 1;
+        retryTimer = setTimeout(open, delay);
+      };
     };
-    source.onerror = () => {
-      setConnection("reconnecting");
-      source.close();
-      window.setTimeout(() => setSseNonce((n) => n + 1), 1200);
-    };
+
+    open();
     return () => {
-      source.close();
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
       setConnection("idle");
     };
   }, [id, run?.id, status, sseNonce, applyEvent, setConnection]);

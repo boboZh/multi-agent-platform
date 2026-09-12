@@ -1,5 +1,6 @@
 import { redisClient } from "@/lib/redis";
 import { runEventChannel } from "@/lib/workflow-runtime/pubsub";
+import { shouldHousekeepSseBuffer } from "@/lib/workflow-runtime/sse-housekeep";
 import {
   PERSISTED_SSE_TYPES,
   type BufferedSseEvent,
@@ -8,6 +9,20 @@ import {
 
 const BUF_TTL_SECONDS = 86_400;
 const BUF_MAX = 4000;
+/** token 热路径上隔这么多帧才 LTRIM/EXPIRE，与 Lua 追加拆开省 RTT。 */
+const HOUSEKEEP_EVERY = 32;
+
+/**
+ * 一次 EVAL：INCR 序号 → 拼帧 → RPUSH → PUBLISH。
+ * id 必须在 Redis 里生成后再入 payload，所以不能拆成客户端 pipeline 三次往返。
+ */
+const APPEND_SSE_LUA = `
+local id = redis.call('INCR', KEYS[1])
+local packed = '{"id":' .. id .. ',"event":' .. ARGV[1] .. '}'
+redis.call('RPUSH', KEYS[2], packed)
+redis.call('PUBLISH', KEYS[3], packed)
+return packed
+`;
 
 function bufKey(runId: string) {
   return `wf:sse:${runId}:buf`;
@@ -32,26 +47,40 @@ export type PendingRunCommand =
 
 /**
  * 把事件推进 Redis 列表并分配单调 id。
- * token 也进缓冲，供 Last-Event-ID 补发；是否落 Postgres 由调用方按类型决定。
+ * 热路径一次 EVAL（INCR+RPUSH+PUBLISH）；LTRIM/EXPIRE 按间隔做，避免每个 token 六趟 RTT。
  */
 export async function appendSseBuffer(
   runId: string,
-  event: WorkflowSseEvent
+  event: WorkflowSseEvent,
 ): Promise<BufferedSseEvent> {
-  // 利用Redis单线程的原子递增特性，为当前工作流生成一个严格连续递增的唯一序号，即原生的last-event-id。为每一次事件打上唯一的ID，是前端断网后按图索骥找补发数据的唯一凭证
-  const id = await redisClient.incr(seqKey(runId));
-  const row: BufferedSseEvent = { id, event };
-  const packed = JSON.stringify(row);
-  // 将打包好的事件塞入一个Redis List尾部，为转瞬即逝的事件留下一个“物理快照缓冲池”
-  await redisClient.rpush(bufKey(runId), packed);
-  // ltrim：强行截断这个列表，使其永远保留最近的BUF_MAX条事件，防止Redis内存溢出（OOM）
-  await redisClient.ltrim(bufKey(runId), -BUF_MAX, -1);
-  // 为缓冲池和自增序号设置/刷新存活时间。确保工作流一旦结束，或者异常挂死，这些临时高频数据会随着时间自动蒸发，不用写任何清理脚本
-  await redisClient.expire(bufKey(runId), BUF_TTL_SECONDS);
-  await redisClient.expire(seqKey(runId), BUF_TTL_SECONDS);
-  // 防竞态哲学（先入列，后发布）：订阅者漏接的帧仍能靠 Last-Event-ID 从 buf 补发。
-  // 通过 Redis Pub/Sub（发布订阅机制）将事件广播出去。前端的 GET /events 接口作为一个旁观者，正监听着这个频道，一收到广播就会立刻转发给浏览器的打字机。
-  await redisClient.publish(runEventChannel(runId), packed);
+  const packed = (await redisClient.eval(
+    APPEND_SSE_LUA,
+    3,
+    seqKey(runId),
+    bufKey(runId),
+    runEventChannel(runId),
+    JSON.stringify(event),
+  )) as string;
+
+  let row: BufferedSseEvent;
+  try {
+    row = JSON.parse(packed) as BufferedSseEvent;
+  } catch {
+    throw new Error("Redis SSE Lua 返回了无法解析的帧");
+  }
+  if (typeof row.id !== "number" || !row.event) {
+    throw new Error("Redis SSE Lua 返回的帧缺少 id");
+  }
+
+  if (shouldHousekeepSseBuffer(row.id, event.type, HOUSEKEEP_EVERY)) {
+    await redisClient
+      .pipeline()
+      .ltrim(bufKey(runId), -BUF_MAX, -1)
+      .expire(bufKey(runId), BUF_TTL_SECONDS)
+      .expire(seqKey(runId), BUF_TTL_SECONDS)
+      .exec();
+  }
+
   return row;
 }
 
