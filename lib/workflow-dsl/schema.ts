@@ -423,7 +423,6 @@ function refineIsolateNode(doc: WorkflowDocument, ctx: z.RefinementCtx) {
       continue;
     }
   }
-  console.log("refineIsolateNode: ", doc);
 }
 
 function refineEdgesExist(doc: WorkflowDocument, ctx: z.RefinementCtx) {
@@ -618,7 +617,7 @@ function refineTopology(
 ) {
   refineUniqueIds(doc, ctx);
   refineStart(doc, ctx);
-  refineIsolateNode(doc, ctx);
+  // refineIsolateNode(doc, ctx);
   refineEdgesExist(doc, ctx);
   refinePortsAndControlFlow(doc, ctx, mode);
 }

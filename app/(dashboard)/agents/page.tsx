@@ -124,28 +124,26 @@ export default function AgentsPage() {
   async function loadAll({ silent = false }: { silent?: boolean } = {}) {
     if (!silent) setLoading(true);
     setError(null);
-    console.log("mockUserId: ", process.env);
     const mockUserId = process.env.NEXT_PUBLIC_MOCK_USER_ID;
     try {
       const [agentsRes, toolsRes] = await Promise.all([
         supabase
           .from("agents")
           .select(
-            "id,user_id,name,system_prompt,model_name,temperature,created_at",
+            "id,user_id,name,system_prompt,model_name,temperature,created_at"
           )
           .eq("user_id", mockUserId)
           .order("created_at", { ascending: false }),
         supabase
           .from("tools")
           .select(
-            "id,user_id,name,display_name,description,tool_type,connection_config",
+            "id,user_id,name,display_name,description,tool_type,connection_config"
           )
           .eq("user_id", mockUserId)
           .eq("tool_type", "explicit")
           .order("display_name", { ascending: true }),
       ]);
 
-      console.log("agentRes: ", agentsRes, toolsRes);
       if (agentsRes.error) throw agentsRes.error;
       if (toolsRes.error) throw toolsRes.error;
 
@@ -167,7 +165,7 @@ export default function AgentsPage() {
 
       const agentToolRows = (agentToolsData || []) as AgentToolRow[];
       const toolById = new Map(
-        toolRows.map((tool) => [tool.id, tool] as const),
+        toolRows.map((tool) => [tool.id, tool] as const)
       );
 
       const toolsByAgent = new Map<UUID, ToolRow[]>();
@@ -258,240 +256,240 @@ export default function AgentsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-8">
-    <div className="mx-auto w-full max-w-7xl space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-1">
+      <div className="mx-auto w-full max-w-7xl space-y-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm shadow-primary/25">
+                <Bot className="h-5 w-5" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+                  AI 智能体目录
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  在将智能体拖入工作流画布之前，浏览、搜索并配置它们。
+                </p>
+              </div>
+            </div>
+          </div>
           <div className="flex items-center gap-2">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm shadow-primary/25">
-              <Bot className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-                AI 智能体目录
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                在将智能体拖入工作流画布之前，浏览、搜索并配置它们。
-              </p>
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={handleRefresh}
-            disabled={refreshing}
-            size="lg"
-          >
-            {refreshing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                刷新中
-              </>
-            ) : (
-              <>
-                <SlidersHorizontal className="h-4 w-4" />
-                刷新
-              </>
-            )}
-          </Button>
-          <Button onClick={openCreate} size="lg">
-            <Plus className="h-4 w-4" />
-            创建智能体
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-3 rounded-xl border border-primary/15 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative w-full sm:max-w-md">
-          <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-primary/70" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="按名称搜索智能体…"
-            className="h-9 border-primary/20 pl-9 focus-visible:border-primary focus-visible:ring-primary/30"
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="hidden rounded-full border border-primary/20 bg-primary/5 px-2 py-1 text-xs font-medium text-primary sm:inline-flex">
-            {filteredAgents.length} / {agents.length}
-          </span>
-          <Button
-            variant={gridCompact ? "outline" : "default"}
-            size="icon-sm"
-            onClick={() => setGridCompact(false)}
-            disabled={!gridCompact}
-            aria-label="宽松网格视图"
-          >
-            <Grid2X2 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={gridCompact ? "default" : "outline"}
-            size="icon-sm"
-            onClick={() => setGridCompact(true)}
-            disabled={gridCompact}
-            aria-label="紧凑网格视图"
-          >
-            <LayoutList className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-
-      {error ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div className={gridCols}>
-          {Array.from({ length: 6 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-      ) : agents.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-primary/25 bg-card p-10 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-            <Bot className="h-6 w-6 text-primary" />
-          </div>
-          <div className="mt-4 text-lg font-semibold text-foreground">
-            暂无智能体
-          </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            创建您的第一个智能体，设置系统提示词、选择模型，并授予显式工具集成权限。
-          </div>
-          <div className="mt-5 flex justify-center">
-            <Button onClick={openCreate}>
+            <Button
+              variant="outline"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              size="lg"
+            >
+              {refreshing ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  刷新中
+                </>
+              ) : (
+                <>
+                  <SlidersHorizontal className="h-4 w-4" />
+                  刷新
+                </>
+              )}
+            </Button>
+            <Button onClick={openCreate} size="lg">
               <Plus className="h-4 w-4" />
               创建智能体
             </Button>
           </div>
         </div>
-      ) : filteredAgents.length === 0 ? (
-        <div className="rounded-2xl border border-primary/15 bg-card p-10 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-            <Search className="h-6 w-6 text-primary" />
+
+        <div className="flex flex-col gap-3 rounded-xl border border-primary/15 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-md">
+            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-primary/70" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="按名称搜索智能体…"
+              className="h-9 border-primary/20 pl-9 focus-visible:border-primary focus-visible:ring-primary/30"
+            />
           </div>
-          <div className="mt-4 text-lg font-semibold text-foreground">
-            未找到匹配的智能体
-          </div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            请尝试其他搜索关键词。
-          </div>
-          <div className="mt-5 flex justify-center">
-            <Button variant="outline" onClick={() => setQuery("")}>
-              清除搜索
+          <div className="flex items-center gap-2">
+            <span className="hidden rounded-full border border-primary/20 bg-primary/5 px-2 py-1 text-xs font-medium text-primary sm:inline-flex">
+              {filteredAgents.length} / {agents.length}
+            </span>
+            <Button
+              variant={gridCompact ? "outline" : "default"}
+              size="icon-sm"
+              onClick={() => setGridCompact(false)}
+              disabled={!gridCompact}
+              aria-label="宽松网格视图"
+            >
+              <Grid2X2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={gridCompact ? "default" : "outline"}
+              size="icon-sm"
+              onClick={() => setGridCompact(true)}
+              disabled={gridCompact}
+              aria-label="紧凑网格视图"
+            >
+              <LayoutList className="h-4 w-4" />
             </Button>
           </div>
         </div>
-      ) : (
-        <div className={gridCols}>
-          {filteredAgents.map((agent) => (
-            <Card
-              key={agent.id}
-              className="group cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/20"
-              onClick={() => router.push(`/agents/${agent.id}`)}
-            >
-              <CardHeader className="pb-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <CardTitle className="truncate">{agent.name}</CardTitle>
-                    <div className="mt-1 inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                      {modelLabel(agent.model_name)}
+
+        {error ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {loading ? (
+          <div className={gridCols}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
+        ) : agents.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-primary/25 bg-card p-10 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+              <Bot className="h-6 w-6 text-primary" />
+            </div>
+            <div className="mt-4 text-lg font-semibold text-foreground">
+              暂无智能体
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              创建您的第一个智能体，设置系统提示词、选择模型，并授予显式工具集成权限。
+            </div>
+            <div className="mt-5 flex justify-center">
+              <Button onClick={openCreate}>
+                <Plus className="h-4 w-4" />
+                创建智能体
+              </Button>
+            </div>
+          </div>
+        ) : filteredAgents.length === 0 ? (
+          <div className="rounded-2xl border border-primary/15 bg-card p-10 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+              <Search className="h-6 w-6 text-primary" />
+            </div>
+            <div className="mt-4 text-lg font-semibold text-foreground">
+              未找到匹配的智能体
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              请尝试其他搜索关键词。
+            </div>
+            <div className="mt-5 flex justify-center">
+              <Button variant="outline" onClick={() => setQuery("")}>
+                清除搜索
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className={gridCols}>
+            {filteredAgents.map((agent) => (
+              <Card
+                key={agent.id}
+                className="group cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-primary/20"
+                onClick={() => router.push(`/agents/${agent.id}`)}
+              >
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <CardTitle className="truncate">{agent.name}</CardTitle>
+                      <div className="mt-1 inline-flex rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                        {modelLabel(agent.model_name)}
+                      </div>
+                    </div>
+                    <div className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                      <Wrench className="h-3.5 w-3.5" />
+                      {agent.explicitTools.length}
                     </div>
                   </div>
-                  <div className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
-                    <Wrench className="h-3.5 w-3.5" />
-                    {agent.explicitTools.length}
+                  <div className="text-xs text-muted-foreground">
+                    温度：
+                    {formatTemp(clamp(agent.temperature ?? 0.7, 0, 1))}
                   </div>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  温度：
-                  {formatTemp(clamp(agent.temperature ?? 0.7, 0, 1))}
-                </div>
-              </CardHeader>
+                </CardHeader>
 
-              <CardContent className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  {promptSnippet(agent.system_prompt, "暂无系统提示词。")}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {agent.explicitTools.length === 0 ? (
-                    <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
-                      无显式工具
-                    </span>
-                  ) : (
-                    agent.explicitTools.slice(0, 4).map((tool) => (
-                      <span
-                        key={tool.id}
-                        className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary"
-                      >
-                        {toolLabel(tool)}
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    {promptSnippet(agent.system_prompt, "暂无系统提示词。")}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {agent.explicitTools.length === 0 ? (
+                      <span className="inline-flex rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
+                        无显式工具
                       </span>
-                    ))
-                  )}
-                  {agent.explicitTools.length > 4 ? (
-                    <span className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary">
-                      另有 {agent.explicitTools.length - 4} 个
-                    </span>
-                  ) : null}
-                </div>
-              </CardContent>
+                    ) : (
+                      agent.explicitTools.slice(0, 4).map((tool) => (
+                        <span
+                          key={tool.id}
+                          className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary"
+                        >
+                          {toolLabel(tool)}
+                        </span>
+                      ))
+                    )}
+                    {agent.explicitTools.length > 4 ? (
+                      <span className="inline-flex rounded-full border border-primary/15 bg-primary/5 px-2 py-1 text-xs text-primary">
+                        另有 {agent.explicitTools.length - 4} 个
+                      </span>
+                    ) : null}
+                  </div>
+                </CardContent>
 
-              <CardFooter
-                className="justify-between"
-                // 卡片本身跳详情；底部按钮必须拦住冒泡，否则「改配置」会先被路由走掉。
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Button
-                  variant="outline"
-                  className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
-                  onClick={() => openEdit(agent)}
+                <CardFooter
+                  className="justify-between"
+                  // 卡片本身跳详情；底部按钮必须拦住冒泡，否则「改配置」会先被路由走掉。
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  修改配置
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      disabled={deletingId === agent.id}
-                      aria-label="智能体操作"
-                    >
-                      {deletingId === agent.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <MoreHorizontal className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-44">
-                    <DropdownMenuItem onClick={() => openEdit(agent)}>
-                      修改配置
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onClick={() => void deleteAgent(agent.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      删除智能体
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </CardFooter>
-            </Card>
-          ))}
-        </div>
-      )}
+                  <Button
+                    variant="outline"
+                    className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
+                    onClick={() => openEdit(agent)}
+                  >
+                    修改配置
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={deletingId === agent.id}
+                        aria-label="智能体操作"
+                      >
+                        {deletingId === agent.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <MoreHorizontal className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-44">
+                      <DropdownMenuItem onClick={() => openEdit(agent)}>
+                        修改配置
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onClick={() => void deleteAgent(agent.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        删除智能体
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+        )}
 
-      <AgentEditorDialog
-        open={editorOpen}
-        agent={editingAgent}
-        explicitTools={explicitTools}
-        onOpenChange={setEditorOpen}
-        onSaved={() => loadAll({ silent: true })}
-        onError={setError}
-      />
-    </div>
+        <AgentEditorDialog
+          open={editorOpen}
+          agent={editingAgent}
+          explicitTools={explicitTools}
+          onOpenChange={setEditorOpen}
+          onSaved={() => loadAll({ silent: true })}
+          onError={setError}
+        />
+      </div>
     </div>
   );
 }

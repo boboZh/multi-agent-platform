@@ -325,9 +325,7 @@ export default function WorkflowEditorPage({
         const nextIssues = payload.errors ?? [];
         setIssues(nextIssues);
         setShowIssues(true);
-        setError(
-          nextIssues[0]?.message ?? "编译未通过。",
-        );
+        setError(nextIssues[0]?.message ?? "编译未通过。");
         return;
       }
       setIssues([]);
@@ -477,7 +475,6 @@ export default function WorkflowEditorPage({
     const description = form.description.trim();
     const nextDocument: WorkflowDocument = { ...sanitized.doc, name };
 
-    console.log("save nextDocument", nextDocument);
     try {
       if (isNew) {
         const { data, error: insertErr } = await supabase
@@ -628,7 +625,14 @@ export default function WorkflowEditorPage({
           </Button>
           <Button
             onClick={handleRun}
-            disabled={isNew || loading || compiling || publishing || running || row?.status !== "published"}
+            disabled={
+              isNew ||
+              loading ||
+              compiling ||
+              publishing ||
+              running ||
+              row?.status !== "published"
+            }
           >
             {running ? (
               <>
@@ -658,7 +662,10 @@ export default function WorkflowEditorPage({
               </>
             )}
           </Button>
-          <Button onClick={handleSave} disabled={saving || compiling || publishing || loading || !dirty}>
+          <Button
+            onClick={handleSave}
+            disabled={saving || compiling || publishing || loading || !dirty}
+          >
             {saving ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />

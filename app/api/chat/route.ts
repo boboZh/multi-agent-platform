@@ -62,13 +62,13 @@ export async function POST(request: Request) {
   const threadId = body.threadId?.trim();
   const incomingMessage = body.message?.trim();
   const messages = (body.messages ?? []).filter(
-    (m) => (m.role === "user" || m.role === "assistant") && m.content.trim(),
+    (m) => (m.role === "user" || m.role === "assistant") && m.content.trim()
   );
 
   if (!agentId || !threadId || (!incomingMessage && messages.length === 0)) {
     return Response.json(
       { error: "agentId, threadId and message are required" },
-      { status: 400 },
+      { status: 400 }
     );
   }
 
@@ -105,7 +105,7 @@ export async function POST(request: Request) {
     const { data: tools } = await supabase
       .from("tools")
       .select(
-        "id,user_id,name,display_name,description,tool_type,connection_config",
+        "id,user_id,name,display_name,description,tool_type,connection_config"
       )
       .in("id", toolIds)
       .eq("user_id", agentRow.user_id)
@@ -160,12 +160,11 @@ export async function POST(request: Request) {
               cachedSummaryKey = summaryKey;
             }
             const summary = older.length > 0 ? cachedSummary : "";
-            console.log("summary: ", summary);
             return [
               new SystemMessage(
                 summary
                   ? `${basePrompt}\n\n此前对话摘要：\n${summary}`
-                  : basePrompt,
+                  : basePrompt
               ),
               ...kept,
             ];
@@ -188,7 +187,7 @@ export async function POST(request: Request) {
         // 不需要再传入历史messages，Langgraph会自动通过threadId去redis抓历史消息，并把这句新的humanMessage append进去
         const eventStream = await reactAgent.streamEvents(
           { messages: [new HumanMessage(userText)] },
-          { ...config, version: "v2" },
+          { ...config, version: "v2" }
         );
 
         for await (const raw of eventStream) {
@@ -198,7 +197,6 @@ export async function POST(request: Request) {
 
         send({ type: "done" });
         const state = await reactAgent.getState(config);
-        console.log("state: ", state);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Agent run failed";
         send({ type: "error", message });

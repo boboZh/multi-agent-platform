@@ -58,6 +58,7 @@ export default function RunConsolePage({
   const [stateLoading, setStateLoading] = useState(false);
   const [sseNonce, setSseNonce] = useState(0);
 
+  // 获取运行详情：流基本信息、运行信息
   useEffect(() => {
     reset();
     let cancelled = false;
@@ -123,7 +124,7 @@ export default function RunConsolePage({
   const reduced = useMemo(() => reduceRunEvents(events), [events]);
   const highlight = useMemo(
     () => deriveHighlight(status, reduced),
-    [status, reduced],
+    [status, reduced]
   );
 
   useEffect(() => {
@@ -172,7 +173,7 @@ export default function RunConsolePage({
         setSubmitting(false);
       }
     },
-    [id, hydrate],
+    [id, hydrate]
   );
 
   const handleRetry = useCallback(async () => {
@@ -219,7 +220,9 @@ export default function RunConsolePage({
 
   if (!run || !dsl) {
     return (
-      <div className="p-6 text-sm text-destructive">{error ?? "运行不存在"}</div>
+      <div className="p-6 text-sm text-destructive">
+        {error ?? "运行不存在"}
+      </div>
     );
   }
 

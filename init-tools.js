@@ -65,8 +65,6 @@ const toolsData = [
 
 // 4. 执行插入操作
 async function seedTools() {
-  console.log("🚀 开始向 Supabase 注入工具数据...");
-
   const { data, error } = await supabase
     .from("tools")
     .insert(toolsData)
@@ -76,12 +74,6 @@ async function seedTools() {
     console.error("❌ 插入失败:", error.message, error.details);
     return;
   }
-
-  console.log("✅ 成功插入以下工具:");
-  data.forEach((tool) => {
-    console.log(`   - [${tool.name}] ${tool.display_name}`);
-  });
-  console.log("\n🎉 工具初始化完成！你现在可以在 Agent 编辑页拉取到它们了。");
 }
 
 seedTools();
