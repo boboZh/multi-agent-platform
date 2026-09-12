@@ -4,11 +4,14 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import { Command, isGraphInterrupt } from "@langchain/langgraph";
-import { compileWorkflow, type CompiledWorkflowApp } from "@/lib/workflow-dsl/compile";
+import {
+  compileWorkflow,
+  type CompiledWorkflowApp,
+} from "@/lib/workflow-dsl/compile";
 import type { WorkflowDocument } from "@/lib/workflow-dsl/schema";
 import type { FlowRunRow } from "@/lib/workflow-dsl/tables";
 import { mapStreamEvent } from "@/lib/agent-runtime/sse";
-import { getRedisCheckpointer } from "@/lib/redis";
+import { getWorkflowCheckpointer } from "@/lib/workflow-runtime/checkpointer";
 import {
   appendSseBuffer,
   shouldPersistEvent,
@@ -18,7 +21,10 @@ import {
   interruptPayloadFromError,
   interruptPayloadFromState,
 } from "@/lib/workflow-runtime/interrupt";
-import { insertPersistedEvent, patchFlowRun } from "@/lib/workflow-runtime/persist";
+import {
+  insertPersistedEvent,
+  patchFlowRun,
+} from "@/lib/workflow-runtime/persist";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 export { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
@@ -28,7 +34,7 @@ export type RunEmitter = (event: WorkflowSseEvent) => Promise<void>;
 export async function emitAndPersist(
   runId: string,
   event: WorkflowSseEvent,
-  onEvent?: RunEmitter,
+  onEvent?: RunEmitter
 ) {
   const buffered = await appendSseBuffer(runId, event);
   if (shouldPersistEvent(event)) {
@@ -46,7 +52,11 @@ function toMessages(raw: unknown): BaseMessage[] {
   if (!Array.isArray(raw)) return [];
   const out: BaseMessage[] = [];
   for (const item of raw) {
-    if (item && typeof item === "object" && typeof (item as BaseMessage)._getType === "function") {
+    if (
+      item &&
+      typeof item === "object" &&
+      typeof (item as BaseMessage)._getType === "function"
+    ) {
       out.push(item as BaseMessage);
       continue;
     }
@@ -94,9 +104,9 @@ function textFromChainOutput(output: unknown): string | undefined {
 
 async function compilePublished(
   dsl: unknown,
-  userId: string,
+  userId: string
 ): Promise<CompiledWorkflowApp> {
-  const checkpointer = await getRedisCheckpointer();
+  const checkpointer = await getWorkflowCheckpointer();
   const compiled = await compileWorkflow(dsl, { checkpointer, userId });
   if (!compiled.ok) {
     throw new Error(compiled.errors[0]?.message ?? "工作流编译失败");
@@ -107,7 +117,7 @@ async function compilePublished(
 /**
  * 真正跑图（只允许控制面 after() 调用，SSE 路由禁止进来）。
  * 入参：flow_runs 行 + 发布快照 DSL + 待执行命令。
- * 步骤：compile → streamEvents → 写状态/interrupt → 经 Redis 列表+PUBLISH 发事件。
+ * 步骤：compile（Postgres checkpointer）→ streamEvents → 写状态/interrupt → Redis 只做 SSE Pub/Sub。
  * 同一 thread_id 上 resume/retry，不另开 checkpoint 会话。
  */
 export async function executeWorkflowRun(options: {
@@ -196,7 +206,9 @@ export async function executeWorkflowRun(options: {
       }
     }
 
-    const state = await app.getState({ configurable: { thread_id: run.thread_id } });
+    const state = await app.getState({
+      configurable: { thread_id: run.thread_id },
+    });
     const interrupt = interruptPayloadFromState({
       tasks: state.tasks,
     });
@@ -232,6 +244,7 @@ export async function executeWorkflowRun(options: {
     await emit({ type: "done" });
     return next;
   } catch (err) {
+    console.error("executeWorkflowRun error: ", err);
     if (isGraphInterrupt(err)) {
       const payload = interruptPayloadFromError(err);
       if (payload) {
@@ -261,4 +274,3 @@ export async function executeWorkflowRun(options: {
     return next;
   }
 }
-

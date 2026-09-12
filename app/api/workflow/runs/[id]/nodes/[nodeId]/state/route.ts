@@ -1,7 +1,7 @@
 import { jsonError, issue, mockUserId } from "@/lib/workflow-runtime/http";
 import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { compileWorkflow } from "@/lib/workflow-dsl/compile";
-import { getRedisCheckpointer } from "@/lib/redis";
+import { getWorkflowCheckpointer } from "@/lib/workflow-runtime/checkpointer";
 import { nodeStateFromHistory } from "@/lib/workflow-runtime/node-state";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function GET(
     return Response.json({ ok: true, nodeId, state: null });
   }
 
-  const checkpointer = await getRedisCheckpointer();
+  const checkpointer = await getWorkflowCheckpointer();
   const compiled = await compileWorkflow(loaded.dsl, { checkpointer, userId });
   if (!compiled.ok) {
     return jsonError(compiled.errors, 422);

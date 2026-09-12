@@ -1,5 +1,10 @@
 import { createRedisSubscriber } from "@/lib/redis";
-import { jsonError, issue, mockUserId, sseHeaders } from "@/lib/workflow-runtime/http";
+import {
+  jsonError,
+  issue,
+  mockUserId,
+  sseHeaders,
+} from "@/lib/workflow-runtime/http";
 import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { readSseBufferAfter } from "@/lib/workflow-runtime/buffer";
 import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
@@ -28,7 +33,7 @@ function sleep(ms: number) {
  */
 export async function GET(
   request: Request,
-  context: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
   const userId = mockUserId();
@@ -43,9 +48,10 @@ export async function GET(
     return jsonError([issue("运行不存在", ["id"])], 404);
   }
 
+  // 原生的 EventSource 浏览器 API 断线重连时会带上 Last-Event-ID 请求头；但如果是前端用 fetch 手动接管流，通常会拼在 URL 参数 ?after= 里。这里取两者的最大值，确保绝对拿到最新的游标（Cursor）。
   const lastEventId = Math.max(
     parseLastEventId(request.headers.get("last-event-id")),
-    parseLastEventId(new URL(request.url).searchParams.get("after")),
+    parseLastEventId(new URL(request.url).searchParams.get("after"))
   );
   const encoder = new TextEncoder();
   const channel = runEventChannel(id);
@@ -83,14 +89,14 @@ export async function GET(
 
       try {
         await replayBuffer();
-        // Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
+        // 持久化兜底：Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
         if (cursor === 0) {
           const persisted = await listPersistedEvents(id);
           for (const row of persisted) {
             send({ id: row.seq, event: row.event });
           }
         }
-
+        // 避免幽灵连接
         if (isTerminalStatus(loaded.run.status)) {
           if (!sentDone) {
             send({ id: cursor + 1, event: { type: "done" } });
@@ -113,9 +119,11 @@ export async function GET(
         // 订阅后再扫一遍列表，补上 SUBSCRIBE 握手窗口里漏掉的帧。
         await replayBuffer();
 
+        // Vercel Serverless/Edge 默认的 HTTP 请求超时是 60 秒
         const deadline = Date.now() + 55_000;
         while (!closed && Date.now() < deadline) {
           if (request.signal.aborted) break;
+          // 挂起与让步：每秒钟醒来看一眼（看看用户有没有断开，看看截止时间到了没），然后立刻进入休眠，把 CPU 线程让给后台的 Redis 监听器。这就保证了在“卡住”主流程的同时，数据依然能顺畅地通过 controller.enqueue 推送给前端。
           await sleep(1000);
         }
       } catch (err) {
@@ -126,8 +134,8 @@ export async function GET(
               encodeWorkflowSse({
                 id: lastEventId + 1,
                 event: { type: "error", message },
-              }),
-            ),
+              })
+            )
           );
         }
       } finally {

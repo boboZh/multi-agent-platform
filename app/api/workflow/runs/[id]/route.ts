@@ -3,10 +3,15 @@ import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
 
 export const runtime = "nodejs";
-
+/**
+ * 获取运行详情，包括运行状态、工作流定义、事件列表
+ * @param _request
+ * @param context
+ * @returns
+ */
 export async function GET(
   _request: Request,
-  context: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
   const userId = mockUserId();

@@ -1,7 +1,10 @@
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
 import { jsonError, issue, mockUserId } from "@/lib/workflow-runtime/http";
 import { scheduleWorkflowEngine } from "@/lib/workflow-runtime/engine";
-import { FLOW_RUN_SELECT_COLUMNS, type FlowRunRow } from "@/lib/workflow-dsl/tables";
+import {
+  FLOW_RUN_SELECT_COLUMNS,
+  type FlowRunRow,
+} from "@/lib/workflow-dsl/tables";
 import type { FlowRow } from "@/lib/workflow-dsl/tables";
 import type { WorkflowDocument } from "@/lib/workflow-dsl/schema";
 import {
@@ -22,15 +25,21 @@ export async function POST(request: Request) {
   } catch {
     return jsonError([issue("请求体不是合法 JSON")], 400);
   }
-  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const record =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const flowId = typeof record.flowId === "string" ? record.flowId.trim() : "";
   if (!flowId) {
     return jsonError([issue("缺少 flowId", ["flowId"])], 400);
   }
 
   const input =
-    record.input && typeof record.input === "object" && !Array.isArray(record.input)
-      ? (record.input as { messages?: unknown[]; vars?: Record<string, unknown> })
+    record.input &&
+    typeof record.input === "object" &&
+    !Array.isArray(record.input)
+      ? (record.input as {
+          messages?: unknown[];
+          vars?: Record<string, unknown>;
+        })
       : {};
 
   const userId = mockUserId();
@@ -65,7 +74,6 @@ export async function POST(request: Request) {
   if (!parsedVars.ok) {
     return jsonError(parsedVars.errors, 422);
   }
-
   const threadId = crypto.randomUUID();
   const { data: inserted, error: insertErr } = await supabase
     .from("flow_runs")

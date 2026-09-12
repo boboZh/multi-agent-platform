@@ -3,7 +3,7 @@ import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { scheduleWorkflowEngine } from "@/lib/workflow-runtime/engine";
 import { patchFlowRun } from "@/lib/workflow-runtime/persist";
 import { compileWorkflow } from "@/lib/workflow-dsl/compile";
-import { getRedisCheckpointer } from "@/lib/redis";
+import { getWorkflowCheckpointer } from "@/lib/workflow-runtime/checkpointer";
 import { findRetryCheckpointId } from "@/lib/workflow-runtime/retry";
 
 export const runtime = "nodejs";
@@ -42,7 +42,7 @@ export async function POST(
     return jsonError([issue("当前状态不允许重试该节点", ["nodeId"], nodeId)], 409);
   }
 
-  const checkpointer = await getRedisCheckpointer();
+  const checkpointer = await getWorkflowCheckpointer();
   const compiled = await compileWorkflow(dsl, { checkpointer, userId });
   if (!compiled.ok) {
     return jsonError(compiled.errors, 422);
