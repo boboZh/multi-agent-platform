@@ -1,13 +1,14 @@
+import { createRedisSubscriber } from "@/lib/redis";
 import { jsonError, issue, mockUserId, sseHeaders } from "@/lib/workflow-runtime/http";
 import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
-import {
-  readSseBufferAfter,
-  releaseRunLock,
-  takePendingCommand,
-  tryAcquireRunLock,
-} from "@/lib/workflow-runtime/buffer";
+import { readSseBufferAfter } from "@/lib/workflow-runtime/buffer";
 import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
-import { executeWorkflowRun, isTerminalStatus } from "@/lib/workflow-runtime/runner";
+import {
+  parsePublishedSse,
+  runEventChannel,
+  selectSseAfter,
+} from "@/lib/workflow-runtime/pubsub";
+import { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 import {
   encodeWorkflowSse,
   parseLastEventId,
@@ -22,8 +23,8 @@ function sleep(ms: number) {
 }
 
 /**
- * SSE：先按 Last-Event-ID 回放 Redis（token 在这里），缓冲空则回放 Postgres 粗事件。
- * 抢到锁且有 pending 命令时才真正 invoke，其它连接只跟缓冲，避免双跑。
+ * SSE 只做 Redis 订阅者：Last-Event-ID 回放缓冲 → SUBSCRIBE 转推。
+ * 绝对不在这里 compile / invoke / streamEvents，否则控制流和执行流重新绑死。
  */
 export async function GET(
   request: Request,
@@ -47,105 +48,93 @@ export async function GET(
     parseLastEventId(new URL(request.url).searchParams.get("after")),
   );
   const encoder = new TextEncoder();
+  const channel = runEventChannel(id);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let cursor = lastEventId;
+      let closed = false;
+      let sentDone = false;
+      let subscriber: ReturnType<typeof createRedisSubscriber> | null = null;
+
       const send = (row: BufferedSseEvent) => {
+        if (closed || row.id <= cursor) return;
+        cursor = row.id;
+        if (row.event.type === "done") sentDone = true;
         controller.enqueue(encoder.encode(encodeWorkflowSse(row)));
       };
 
-      try {
-        let cursor = lastEventId;
+      const closeStream = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          controller.close();
+        } catch {
+          // 客户端已断开
+        }
+      };
+
+      const replayBuffer = async () => {
         const buffered = await readSseBufferAfter(id, cursor);
-        if (buffered.length > 0) {
-          for (const row of buffered) {
-            send(row);
-            cursor = row.id;
-          }
-        } else if (cursor === 0) {
+        for (const row of selectSseAfter(buffered, cursor)) {
+          send(row);
+        }
+      };
+
+      try {
+        await replayBuffer();
+        // Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
+        if (cursor === 0) {
           const persisted = await listPersistedEvents(id);
           for (const row of persisted) {
             send({ id: row.seq, event: row.event });
-            cursor = Math.max(cursor, row.seq);
           }
         }
 
-        const locked = await tryAcquireRunLock(id);
-        let executing: Promise<unknown> | null = null;
-        if (locked) {
-          const fresh = await loadRunWithDsl(id, userId);
-          const command =
-            (await takePendingCommand(id)) ??
-            (fresh?.run.status === "pending"
-              ? {
-                  kind: "start" as const,
-                  input: (fresh.run.input ?? {}) as {
-                    messages?: unknown[];
-                    vars?: Record<string, unknown>;
-                  },
-                }
-              : null);
-          if (fresh && command) {
-            executing = executeWorkflowRun({
-              run: fresh.run,
-              dsl: fresh.dsl,
-              command,
-              userId,
-            }).finally(() => {
-              void releaseRunLock(id);
-            });
-          } else {
-            await releaseRunLock(id);
+        if (isTerminalStatus(loaded.run.status)) {
+          if (!sentDone) {
+            send({ id: cursor + 1, event: { type: "done" } });
           }
+          closeStream();
+          return;
         }
+
+        subscriber = createRedisSubscriber();
+        await subscriber.subscribe(channel);
+        subscriber.on("message", (_ch: string, message: string) => {
+          const parsed = parsePublishedSse(message);
+          if (!parsed) return;
+          send(parsed);
+          if (parsed.event.type === "done") {
+            closeStream();
+          }
+        });
+
+        // 订阅后再扫一遍列表，补上 SUBSCRIBE 握手窗口里漏掉的帧。
+        await replayBuffer();
 
         const deadline = Date.now() + 55_000;
-        while (Date.now() < deadline) {
-          const more = await readSseBufferAfter(id, cursor);
-          for (const row of more) {
-            send(row);
-            cursor = row.id;
-          }
-          if (more.some((row) => row.event.type === "done")) {
-            break;
-          }
-          const latest = await loadRunWithDsl(id, userId);
-          if (
-            latest &&
-            isTerminalStatus(latest.run.status) &&
-            more.length === 0
-          ) {
-            break;
-          }
-          if (executing) {
-            const settled = await Promise.race([
-              executing.then(() => "done" as const),
-              sleep(350).then(() => "wait" as const),
-            ]);
-            if (settled === "done") {
-              const tail = await readSseBufferAfter(id, cursor);
-              for (const row of tail) {
-                send(row);
-                cursor = row.id;
-              }
-              break;
-            }
-          } else {
-            await sleep(400);
-          }
+        while (!closed && Date.now() < deadline) {
+          if (request.signal.aborted) break;
+          await sleep(1000);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "SSE 失败";
-        controller.enqueue(
-          encoder.encode(
-            encodeWorkflowSse({
-              id: lastEventId + 1,
-              event: { type: "error", message },
-            }),
-          ),
-        );
+        if (!closed) {
+          controller.enqueue(
+            encoder.encode(
+              encodeWorkflowSse({
+                id: lastEventId + 1,
+                event: { type: "error", message },
+              }),
+            ),
+          );
+        }
       } finally {
-        controller.close();
+        if (subscriber) {
+          await subscriber.quit().catch(() => undefined);
+        }
+        closeStream();
       }
     },
   });

@@ -1,4 +1,5 @@
 import { redisClient } from "@/lib/redis";
+import { runEventChannel } from "@/lib/workflow-runtime/pubsub";
 import {
   PERSISTED_SSE_TYPES,
   type BufferedSseEvent,
@@ -39,10 +40,13 @@ export async function appendSseBuffer(
 ): Promise<BufferedSseEvent> {
   const id = await redisClient.incr(seqKey(runId));
   const row: BufferedSseEvent = { id, event };
-  await redisClient.rpush(bufKey(runId), JSON.stringify(row));
+  const packed = JSON.stringify(row);
+  await redisClient.rpush(bufKey(runId), packed);
   await redisClient.ltrim(bufKey(runId), -BUF_MAX, -1);
   await redisClient.expire(bufKey(runId), BUF_TTL_SECONDS);
   await redisClient.expire(seqKey(runId), BUF_TTL_SECONDS);
+  // 先入列表再 PUBLISH：订阅者漏接的帧仍能靠 Last-Event-ID 从 buf 补发。
+  await redisClient.publish(runEventChannel(runId), packed);
   return row;
 }
 

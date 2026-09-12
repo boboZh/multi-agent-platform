@@ -1,6 +1,6 @@
 import { jsonError, issue, mockUserId } from "@/lib/workflow-runtime/http";
 import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
-import { setPendingCommand } from "@/lib/workflow-runtime/buffer";
+import { scheduleWorkflowEngine } from "@/lib/workflow-runtime/engine";
 import { patchFlowRun } from "@/lib/workflow-runtime/persist";
 import { parseResumePayload } from "@/app/(dashboard)/runs/lib/resume-payload";
 import type { ReviewFormField } from "@/lib/workflow-dsl/schema";
@@ -37,11 +37,16 @@ export async function POST(
     return jsonError(parsed.errors, 422);
   }
 
-  await setPendingCommand(id, { kind: "resume", resume: parsed.resume });
   const run = await patchFlowRun(id, {
     status: "running",
     interrupt_payload: null,
     error: null,
+  });
+  scheduleWorkflowEngine({
+    run,
+    dsl: loaded.dsl,
+    command: { kind: "resume", resume: parsed.resume },
+    userId,
   });
   return Response.json({ ok: true, run });
 }

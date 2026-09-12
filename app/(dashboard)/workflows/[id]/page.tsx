@@ -48,6 +48,8 @@ import {
   InspectorDrawer,
   type RefOption,
 } from "../components/inspector-drawer";
+import { RunInputDialog } from "../components/run-input-dialog";
+import { startVariablesOf } from "@/lib/workflow-dsl/start-variables";
 
 /**
  * 工作流编辑器：新增与编辑的唯一入口（列表页只负责跳进来）。
@@ -85,6 +87,7 @@ export default function WorkflowEditorPage({
   const [compiling, setCompiling] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [running, setRunning] = useState(false);
+  const [runInputOpen, setRunInputOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -388,10 +391,10 @@ export default function WorkflowEditorPage({
   }
 
   /**
-   * 运行已发布版本：insert flow_runs 后跳监控详情，SSE 在那边拉起图。
+   * 运行已发布版本：有 start.variables 时先弹动态表单，提交后再 insert flow_runs 并跳监控详情。
    * 未发布或未保存不能跑，否则会拿草稿 DSL，和发布钉死的版本对不上。
    */
-  async function handleRun() {
+  async function startRun(vars: Record<string, unknown>) {
     if (isNew || compiling || publishing || saving || running) return;
     if (row?.status !== "published") {
       setError("请先发布工作流再运行。");
@@ -407,21 +410,44 @@ export default function WorkflowEditorPage({
       const response = await fetch("/api/workflow/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ flowId: id, input: { vars: {} } }),
+        body: JSON.stringify({ flowId: id, input: { vars } }),
       });
       const payload = (await response.json()) as
         | { ok: true; run: { id: string } }
         | { ok: false; errors?: WorkflowIssue[] };
       if (!payload.ok) {
-        setError(payload.errors?.[0]?.message ?? "启动运行失败。");
-        return;
+        const message = payload.errors?.[0]?.message ?? "启动运行失败。";
+        setError(message);
+        throw new Error(message);
       }
+      setRunInputOpen(false);
       router.push(`/runs/${payload.run.id}`);
     } catch (e: unknown) {
-      setError(getErrorMessage(e) ?? "启动运行失败。");
+      const message = getErrorMessage(e) ?? "启动运行失败。";
+      setError(message);
+      throw e instanceof Error ? e : new Error(message);
     } finally {
       setRunning(false);
     }
+  }
+
+  function handleRun() {
+    if (isNew || compiling || publishing || saving || running) return;
+    if (row?.status !== "published") {
+      setError("请先发布工作流再运行。");
+      return;
+    }
+    if (dirty) {
+      setError("有未保存的修改，请先保存并发布后再运行。");
+      return;
+    }
+    setError(null);
+    const variables = startVariablesOf(doc);
+    if (variables.length > 0) {
+      setRunInputOpen(true);
+      return;
+    }
+    void startRun({}).catch(() => undefined);
   }
 
   /**
@@ -717,6 +743,16 @@ export default function WorkflowEditorPage({
           />
         </div>
       )}
+
+      {runInputOpen ? (
+        <RunInputDialog
+          open={runInputOpen}
+          variables={startVariablesOf(doc)}
+          submitting={running}
+          onOpenChange={setRunInputOpen}
+          onSubmit={startRun}
+        />
+      ) : null}
     </div>
   );
 }

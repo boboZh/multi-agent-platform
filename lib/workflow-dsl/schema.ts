@@ -10,6 +10,7 @@ import {
   NODE_TYPE_BY_KIND,
   NODE_TYPES,
   REVIEW_FIELD_TYPES,
+  START_VARIABLE_TYPES,
   WORKFLOW_SCHEMA_VERSION,
   defaultConditionBranches,
   type NodeKind,
@@ -38,7 +39,40 @@ export const nodeUiSchema = z
   })
   .passthrough();
 
-export const startConfigSchema = z.object({}).strict();
+export const startVariableSchema = z.object({
+  key: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "变量 key 须为标识符"),
+  label: z.string().min(1),
+  type: z.enum(START_VARIABLE_TYPES),
+  required: z.boolean().default(true),
+});
+
+/**
+ * Start 入参写在 config.variables，运行时变成 state.vars。
+ * 允许空数组：没有入参的流程点「运行」不必弹窗。
+ * key 去重是为了防止两行抢同一个 vars 槽，运行表单也会渲染成两个同名输入。
+ */
+export const startConfigSchema = z
+  .object({
+    variables: z.array(startVariableSchema).default([]),
+  })
+  .strict()
+  .superRefine((config, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, variable] of config.variables.entries()) {
+      if (seen.has(variable.key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `入参 key 重复: ${variable.key}`,
+          path: ["variables", index, "key"],
+        });
+      }
+      seen.add(variable.key);
+    }
+  });
+
 export const endConfigSchema = z.object({}).strict();
 
 export const agentConfigSchema = z.object({
@@ -275,6 +309,8 @@ export type ToolNodeConfig = z.infer<typeof toolConfigSchema>;
 export type ConditionNodeConfig = z.infer<typeof conditionConfigSchema>;
 export type HumanReviewNodeConfig = z.infer<typeof humanReviewConfigSchema>;
 export type ReviewFormField = z.infer<typeof reviewFormFieldSchema>;
+export type StartNodeConfig = z.infer<typeof startConfigSchema>;
+export type StartVariable = z.infer<typeof startVariableSchema>;
 
 export type WorkflowIssue = {
   message: string;
@@ -587,7 +623,7 @@ export function parseWorkflowDocument(
 export function defaultConfigForKind(kind: NodeKind): WorkflowNodeData["config"] {
   switch (kind) {
     case "start":
-      return {};
+      return { variables: [] };
     case "end":
       return {};
     case "agent":

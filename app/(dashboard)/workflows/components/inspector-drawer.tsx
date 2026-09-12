@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { REVIEW_FIELD_TYPES, NODE_KIND_LABELS } from "@/lib/workflow-dsl/kinds";
+import { REVIEW_FIELD_TYPES, NODE_KIND_LABELS, START_VARIABLE_TYPES, START_VARIABLE_TYPE_LABELS } from "@/lib/workflow-dsl/kinds";
 import type {
+  StartVariable,
   WorkflowDocument,
   WorkflowNodeData,
 } from "@/lib/workflow-dsl/schema";
@@ -287,10 +288,160 @@ function InputMapEditor({
   );
 }
 
-function StartEndForm() {
+function StartForm({
+  data,
+  onChange,
+  onError,
+}: {
+  data: Extract<WorkflowNodeData, { kind: "start" }>;
+  onChange: (next: WorkflowNodeData) => void;
+  onError: (message: string | null) => void;
+}) {
+  const variables = data.config.variables ?? [];
+
+  function patchVariable(index: number, patch: Partial<StartVariable>) {
+    onChange({
+      ...data,
+      config: {
+        variables: variables.map((variable, i) =>
+          i === index ? { ...variable, ...patch } : variable,
+        ),
+      },
+    });
+  }
+
+  function nextKey() {
+    const taken = new Set(variables.map((variable) => variable.key));
+    let index = variables.length + 1;
+    while (taken.has(`var_${index}`)) index += 1;
+    return `var_${index}`;
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-foreground">运行入参</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            按 key / 名称成对配置。运行时写入 state.vars，供后续节点用
+            state.vars.orderId 这类路径读取。
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() => {
+            onError(null);
+            const key = nextKey();
+            onChange({
+              ...data,
+              config: {
+                variables: [
+                  ...variables,
+                  { key, label: "新变量", type: "string", required: true },
+                ],
+              },
+            });
+          }}
+        >
+          <Plus className="h-3 w-3" />
+          添加
+        </Button>
+      </div>
+
+      {variables.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-primary/20 px-3 py-4 text-center text-xs text-muted-foreground">
+          未配置入参，点运行会直接启动。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_28px] gap-1.5 px-1 text-[10px] font-medium text-muted-foreground">
+            <span>变量 key</span>
+            <span>变量名</span>
+            <span />
+          </div>
+          {variables.map((variable, index) => (
+            <div
+              // 不能用 variable.key 当 React key：用户正在改的就是这个字段，
+              // 每敲一个字符 key 变一次，整行（含「变量名」）都会重挂并丢掉焦点。
+              key={index}
+              className="space-y-1.5 rounded-lg border border-primary/15 bg-muted/40 p-2"
+            >
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_28px] items-center gap-1.5">
+                <Input
+                  value={variable.key}
+                  className="h-8 font-mono text-xs"
+                  placeholder="orderId"
+                  aria-label="变量 key"
+                  onChange={(e) => patchVariable(index, { key: e.target.value })}
+                />
+                <Input
+                  value={variable.label}
+                  className="h-8 text-xs"
+                  placeholder="订单号"
+                  aria-label="变量名"
+                  onChange={(e) =>
+                    patchVariable(index, { label: e.target.value })
+                  }
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`删除入参 ${variable.key}`}
+                  onClick={() => {
+                    onError(null);
+                    onChange({
+                      ...data,
+                      config: {
+                        variables: variables.filter((_, i) => i !== index),
+                      },
+                    });
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+                <select
+                  className={`${SELECT_CLASS} h-8`}
+                  value={variable.type}
+                  aria-label="变量类型"
+                  onChange={(e) =>
+                    patchVariable(index, {
+                      type: e.target.value as (typeof START_VARIABLE_TYPES)[number],
+                    })
+                  }
+                >
+                  {START_VARIABLE_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {START_VARIABLE_TYPE_LABELS[type]}
+                    </option>
+                  ))}
+                </select>
+                <label className="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={variable.required !== false}
+                    onChange={(e) =>
+                      patchVariable(index, { required: e.target.checked })
+                    }
+                  />
+                  必填
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EndForm() {
   return (
     <p className="text-sm text-muted-foreground">
-      该节点没有可配置项，只作为流程的起点/终点。
+      该节点没有可配置项，只作为流程的终点。
     </p>
   );
 }
@@ -916,9 +1067,14 @@ export function InspectorDrawer({
               />
             </Field>
 
-            {node.data.kind === "start" || node.data.kind === "end" ? (
-              <StartEndForm />
+            {node.data.kind === "start" ? (
+              <StartForm
+                data={node.data}
+                onChange={updateData}
+                onError={onError}
+              />
             ) : null}
+            {node.data.kind === "end" ? <EndForm /> : null}
             {node.data.kind === "agent" ? (
               <AgentForm
                 key={node.id}

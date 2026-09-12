@@ -6,7 +6,7 @@ import {
 import { Command, isGraphInterrupt } from "@langchain/langgraph";
 import { compileWorkflow, type CompiledWorkflowApp } from "@/lib/workflow-dsl/compile";
 import type { WorkflowDocument } from "@/lib/workflow-dsl/schema";
-import type { FlowRunRow, FlowRunStatus } from "@/lib/workflow-dsl/tables";
+import type { FlowRunRow } from "@/lib/workflow-dsl/tables";
 import { mapStreamEvent } from "@/lib/agent-runtime/sse";
 import { getRedisCheckpointer } from "@/lib/redis";
 import {
@@ -20,6 +20,8 @@ import {
 } from "@/lib/workflow-runtime/interrupt";
 import { insertPersistedEvent, patchFlowRun } from "@/lib/workflow-runtime/persist";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
+
+export { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 
 export type RunEmitter = (event: WorkflowSseEvent) => Promise<void>;
 
@@ -103,9 +105,10 @@ async function compilePublished(
 }
 
 /**
- * 真正跑图。入参：flow_runs 行 + 发布快照 DSL + 待执行命令。
- * 步骤：compile → streamEvents → 写状态/interrupt → 终态 completed/failed/interrupted。
- * 同一 thread_id 上 resume/retry，不另开 Redis 会话。
+ * 真正跑图（只允许控制面 after() 调用，SSE 路由禁止进来）。
+ * 入参：flow_runs 行 + 发布快照 DSL + 待执行命令。
+ * 步骤：compile → streamEvents → 写状态/interrupt → 经 Redis 列表+PUBLISH 发事件。
+ * 同一 thread_id 上 resume/retry，不另开 checkpoint 会话。
  */
 export async function executeWorkflowRun(options: {
   run: FlowRunRow;
@@ -127,22 +130,22 @@ export async function executeWorkflowRun(options: {
   });
   await emit({ type: "run_status", status: "running" });
 
-  const app = await compilePublished(dsl, userId);
-  const configurable: Record<string, string> = { thread_id: run.thread_id };
-  if (command.kind === "retry") {
-    configurable.checkpoint_id = command.checkpointId;
-  }
-
-  let graphInput: Parameters<CompiledWorkflowApp["streamEvents"]>[0];
-  if (command.kind === "start") {
-    graphInput = graphInputFromStart(command.input);
-  } else if (command.kind === "resume") {
-    graphInput = new Command({ resume: command.resume });
-  } else {
-    graphInput = null;
-  }
-
   try {
+    const app = await compilePublished(dsl, userId);
+    const configurable: Record<string, string> = { thread_id: run.thread_id };
+    if (command.kind === "retry") {
+      configurable.checkpoint_id = command.checkpointId;
+    }
+
+    let graphInput: Parameters<CompiledWorkflowApp["streamEvents"]>[0];
+    if (command.kind === "start") {
+      graphInput = graphInputFromStart(command.input);
+    } else if (command.kind === "resume") {
+      graphInput = new Command({ resume: command.resume });
+    } else {
+      graphInput = null;
+    }
+
     const eventStream = await app.streamEvents(graphInput, {
       version: "v2",
       configurable,
@@ -259,11 +262,3 @@ export async function executeWorkflowRun(options: {
   }
 }
 
-export function isTerminalStatus(status: FlowRunStatus) {
-  return (
-    status === "completed" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "interrupted"
-  );
-}

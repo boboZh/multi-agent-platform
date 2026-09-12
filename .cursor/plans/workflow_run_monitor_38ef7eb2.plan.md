@@ -39,9 +39,9 @@ isProject: false
 ## 现状与约束
 
 - API 前缀已是单数 `[/api/workflow/compile](app/api/workflow/compile/route.ts)`、`[/api/workflow/publish](app/api/workflow/publish/route.ts)`，运行接口沿用 `/api/workflow/...`，页面路由按需求用 `/runs`、`/runs/[id]`。
-- Chat 已有 SSE 协议 `[lib/agent-runtime/sse.ts](lib/agent-runtime/sse.ts)` + Redis `thread_id` checkpoint；工作流 **thread_id = `flow_runs.thread_id`**，与 chat 共用 `[getRedisCheckpointer()](lib/redis.ts)`。
+- Chat 已有 SSE 协议 `[lib/agent-runtime/sse.ts](lib/agent-runtime/sse.ts)` + Redis `thread_id` checkpoint；工作流 **thread_id =** `flow_runs.thread_id`，隔离Checkpointer，工作流与 chat不能混用。工作流引擎必须使用基于postgres的持久化checkpointer。使用@langchain/langgraph- checkpoint-postgres，把每一次节点执行的二进制状态永久写进Postgres的checkpoints表中
 - 列表筛选文案映射库状态：运行中=`running`（含短暂 `pending`）、成功=`completed`、失败=`failed`、挂起=`interrupted`。`cancelled` 入库但不进四个主筛选项。
-- URL 的 `[id]` 用 `**flow_runs.id**`（UUID）；`thread_id` 只作为 LangGraph configurable，不进路径（避免暴露 Redis key、也方便列表 join）。
+- 业务展示层 和 底层引擎层 做ID隔离：前端路由URL 的 `[id]` 用 `**flow_runs.id**`（UUID）；`thread_id` 只作为 LangGraph configurable，不进路径（避免暴露 Postgres key、也方便列表 join）。
 
 ```mermaid
 flowchart LR
@@ -110,7 +110,7 @@ app/api/workflow/
 
 - 运行头：flow 名、version、status、thread_id、取消（可选延后）。
 - `RunEventTimeline`：按 reducer 累积的 `node_start` / token / `tool_start|end` / `node_end` / `error` / `interrupt`。
-- `RunInterruptForm`：仅 `status=interrupted` 时渲染。字段来自 `interrupt_payload.form`（即 DSL `formFields`：text / enum / boolean）。提交走 resume，不直接打 Redis。
+- `RunInterruptForm`：仅 `status=interrupted` 时渲染。字段来自 `interrupt_payload.form`（即 DSL `formFields`：text / enum / boolean）。提交走 resume，不直接打 Postgres。
 
 **右：只读画布**
 

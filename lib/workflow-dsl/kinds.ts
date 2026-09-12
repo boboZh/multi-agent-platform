@@ -49,6 +49,16 @@ export type ConditionMode = (typeof CONDITION_MODES)[number];
 export const REVIEW_FIELD_TYPES = ["text", "enum", "boolean"] as const;
 export type ReviewFieldType = (typeof REVIEW_FIELD_TYPES)[number];
 
+/** Start 节点入参类型；运行弹窗按这个渲染控件并写入 state.vars[key]。 */
+export const START_VARIABLE_TYPES = ["string", "number", "boolean"] as const;
+export type StartVariableType = (typeof START_VARIABLE_TYPES)[number];
+
+export const START_VARIABLE_TYPE_LABELS: Record<StartVariableType, string> = {
+  string: "字符串",
+  number: "数字",
+  boolean: "布尔",
+};
+
 export type PortSpec = {
   /** Incoming handles. `0` = Start. */
   targets: 0 | 1;

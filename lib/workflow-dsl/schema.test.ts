@@ -14,6 +14,7 @@ import {
   formatWorkflowIssues,
   parseWorkflowDocument,
   reviewFormFieldSchema,
+  startConfigSchema,
   workflowDocumentShapeSchema,
   workflowEdgeSchema,
   workflowNodeSchema,
@@ -178,6 +179,45 @@ describe("agentConfigSchema", () => {
   // 空字符串过不了 min(1)，否则运行时会把结果写进匿名 key，后续节点无法引用。
   it("边界：outputKey 为空字符串时拒绝", () => {
     const result = agentConfigSchema.safeParse({ outputKey: "" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("startConfigSchema", () => {
+  it("合法入参对写入 variables，缺省 required 为 true", () => {
+    const parsed = startConfigSchema.parse({
+      variables: [{ key: "orderId", label: "订单号", type: "string" }],
+    });
+    expect(parsed.variables).toEqual([
+      { key: "orderId", label: "订单号", type: "string", required: true },
+    ]);
+  });
+
+  it("旧文档 config 为空对象时补成空 variables，避免历史草稿无法打开", () => {
+    expect(startConfigSchema.parse({})).toEqual({ variables: [] });
+  });
+
+  it("边界：变量 key 为空字符串时拒绝", () => {
+    const result = startConfigSchema.safeParse({
+      variables: [{ key: "", label: "订单号", type: "string" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：重复 key 时拒绝，防止运行表单两个输入抢同一个 vars 槽", () => {
+    const result = startConfigSchema.safeParse({
+      variables: [
+        { key: "orderId", label: "订单号", type: "string" },
+        { key: "orderId", label: "另一个", type: "number" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：type 不在枚举内时拒绝", () => {
+    const result = startConfigSchema.safeParse({
+      variables: [{ key: "orderId", label: "订单号", type: "text" }],
+    });
     expect(result.success).toBe(false);
   });
 });

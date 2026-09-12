@@ -98,6 +98,13 @@ function summaryOf(
         text: `${data.config.title} · ${data.config.formFields.length} 个字段`,
         muted: false,
       };
+    case "start": {
+      // 发布快照可能是 variables 落地前的旧 DSL，config 里没有这个字段。
+      const count = data.config.variables?.length ?? 0;
+      return count === 0
+        ? { text: "无入参", muted: true }
+        : { text: `${count} 个入参`, muted: false };
+    }
     default:
       return { text: "", muted: true };
   }

@@ -14,6 +14,14 @@ if (process.env.NODE_ENV !== "production") {
   globalForRedis.redisClient = redisClient;
 }
 
+/**
+ * Pub/Sub 订阅必须用独立连接：ioredis 进入 subscriber 模式后不能再 GET/RPUSH。
+ * 每次 SSE 打开 duplicate 一条，关闭时 quit，避免和引擎 publish 抢同一 socket。
+ */
+export function createRedisSubscriber() {
+  return redisClient.duplicate();
+}
+
 const ttlConfig = {
   defaultTTL: 1440,
   refreshOnRead: true,

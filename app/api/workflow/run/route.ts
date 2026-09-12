@@ -1,14 +1,19 @@
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
 import { jsonError, issue, mockUserId } from "@/lib/workflow-runtime/http";
-import { setPendingCommand } from "@/lib/workflow-runtime/buffer";
+import { scheduleWorkflowEngine } from "@/lib/workflow-runtime/engine";
 import { FLOW_RUN_SELECT_COLUMNS, type FlowRunRow } from "@/lib/workflow-dsl/tables";
 import type { FlowRow } from "@/lib/workflow-dsl/tables";
+import type { WorkflowDocument } from "@/lib/workflow-dsl/schema";
+import {
+  parseStartInput,
+  startVariablesFromDsl,
+} from "@/lib/workflow-dsl/start-variables";
 
 export const runtime = "nodejs";
 
 /**
- * 启动一次运行：校验已发布版本 → 插入 pending → 把 start 命令放进 Redis。
- * 立刻返回 run，真正 invoke 交给详情页 GET .../events，避免「运行」按钮卡住整段 LLM。
+ * 控制面：校验已发布版本 → 插入 pending → after() 异步拉起引擎。
+ * 立刻返回 run；SSE 只订阅 Redis，不在本请求 invoke。
  */
 export async function POST(request: Request) {
   let body: unknown;
@@ -46,13 +51,19 @@ export async function POST(request: Request) {
 
   const { data: version, error: versionErr } = await supabase
     .from("flow_versions")
-    .select("version")
+    .select("version, dsl")
     .eq("flow_id", flowId)
     .eq("version", flowRow.version)
     .maybeSingle();
   if (versionErr) return jsonError([issue(versionErr.message)], 500);
   if (!version) {
     return jsonError([issue("找不到已发布版本，请重新发布", ["flowId"])], 422);
+  }
+
+  const variables = startVariablesFromDsl((version as { dsl: unknown }).dsl);
+  const parsedVars = parseStartInput(variables, input.vars ?? {});
+  if (!parsedVars.ok) {
+    return jsonError(parsedVars.errors, 422);
   }
 
   const threadId = crypto.randomUUID();
@@ -66,7 +77,7 @@ export async function POST(request: Request) {
       status: "pending",
       input: {
         messages: input.messages ?? [],
-        vars: input.vars ?? {},
+        vars: parsedVars.vars,
       },
     })
     .select(FLOW_RUN_SELECT_COLUMNS)
@@ -76,12 +87,18 @@ export async function POST(request: Request) {
   }
 
   const run = inserted as FlowRunRow;
-  await setPendingCommand(run.id, {
-    kind: "start",
-    input: {
-      messages: input.messages ?? [],
-      vars: input.vars ?? {},
+  const dsl = (version as { dsl: WorkflowDocument }).dsl;
+  scheduleWorkflowEngine({
+    run,
+    dsl,
+    command: {
+      kind: "start",
+      input: {
+        messages: input.messages ?? [],
+        vars: parsedVars.vars,
+      },
     },
+    userId,
   });
 
   return Response.json({ ok: true, run });

@@ -1,6 +1,6 @@
 import { jsonError, issue, mockUserId } from "@/lib/workflow-runtime/http";
 import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
-import { setPendingCommand } from "@/lib/workflow-runtime/buffer";
+import { scheduleWorkflowEngine } from "@/lib/workflow-runtime/engine";
 import { patchFlowRun } from "@/lib/workflow-runtime/persist";
 import { compileWorkflow } from "@/lib/workflow-dsl/compile";
 import { getRedisCheckpointer } from "@/lib/redis";
@@ -9,7 +9,7 @@ import { findRetryCheckpointId } from "@/lib/workflow-runtime/retry";
 export const runtime = "nodejs";
 
 /**
- * 节点重试：从 history 找到目标节点执行前的 checkpoint，写 pending retry 命令。
+ * 节点重试：时间旅行到目标节点执行前，控制面 after() 拉起引擎续跑。
  * 不 new thread_id，否则上游 vars 全丢。
  */
 export async function POST(
@@ -62,11 +62,16 @@ export async function POST(
     );
   }
 
-  await setPendingCommand(id, { kind: "retry", checkpointId });
   const next = await patchFlowRun(id, {
     status: "running",
     interrupt_payload: null,
     error: null,
+  });
+  scheduleWorkflowEngine({
+    run: next,
+    dsl,
+    command: { kind: "retry", checkpointId },
+    userId,
   });
   return Response.json({ ok: true, run: next, checkpointId });
 }
