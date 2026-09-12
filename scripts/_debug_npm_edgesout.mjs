@@ -54,8 +54,7 @@ agentLog("A", "scripts/_debug_npm_edgesout.mjs:node", "runtime versions", {
 
 agentLog("B", "scripts/_debug_npm_edgesout.mjs:pkg", "vitest pin state", {
   hasVitest: Boolean(pkg.devDependencies?.vitest || pkg.dependencies?.vitest),
-  vitestRange:
-    pkg.devDependencies?.vitest || pkg.dependencies?.vitest || null,
+  vitestRange: pkg.devDependencies?.vitest || pkg.dependencies?.vitest || null,
   scriptsTest: pkg.scripts?.test ?? null,
 });
 
@@ -110,13 +109,6 @@ agentLog("E", "scripts/_debug_npm_edgesout.mjs:lock", "lockfile presence", {
     .lockfileVersion,
 });
 
-console.log(
-  JSON.stringify(
-    { status: result.status, crashedEdgesOut: /edgesOut/.test(result.stderr || ""), nodeV, npmV },
-    null,
-    2
-  )
-);
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 process.exit(result.status ?? 1);

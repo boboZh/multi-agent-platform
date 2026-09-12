@@ -31,12 +31,13 @@ export function parsePublishedSse(raw: unknown): BufferedSseEvent | null {
 }
 
 /**
+ * 获取redis中last-event-id之后的token数据
  * Last-Event-ID 断点：只转发 id 更大的帧，并按 id 排序。
  * 乱序到达时仍保证前端动画按序号衔接；id 相等视为已送达，避免重放。
  */
 export function selectSseAfter(
   rows: unknown,
-  lastId: number,
+  lastId: number
 ): BufferedSseEvent[] {
   if (!Array.isArray(rows) || rows.length === 0) return [];
   const cursor =
@@ -47,7 +48,11 @@ export function selectSseAfter(
   for (const item of rows) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const rec = item as { id?: unknown; event?: unknown };
-    if (typeof rec.id !== "number" || !Number.isInteger(rec.id) || rec.id <= cursor) {
+    if (
+      typeof rec.id !== "number" ||
+      !Number.isInteger(rec.id) ||
+      rec.id <= cursor
+    ) {
       continue;
     }
     if (!isWorkflowSseEvent(rec.event)) continue;
