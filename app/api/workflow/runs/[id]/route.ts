@@ -28,6 +28,7 @@ export async function GET(
       dsl: loaded.dsl,
       flowName: loaded.flowName,
       events: events.map((row) => row.event),
+      lastEventId: events.reduce((max, row) => Math.max(max, row.seq), 0),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "读取运行失败";
