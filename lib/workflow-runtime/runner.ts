@@ -213,6 +213,7 @@ export async function executeWorkflowRun(options: {
       tasks: state.tasks,
     });
     if (interrupt) {
+      console.log("interruptPayloadFromState", state);
       const next = await patchFlowRun(run.id, {
         status: "interrupted",
         interrupt_payload: interrupt,
@@ -223,7 +224,7 @@ export async function executeWorkflowRun(options: {
         status: "interrupted",
         currentNodeId: interrupt.nodeId,
       });
-      await emit({ type: "done" });
+      // await emit({ type: "done" });
       return next;
     }
 
@@ -246,6 +247,7 @@ export async function executeWorkflowRun(options: {
   } catch (err) {
     console.error("executeWorkflowRun error: ", err);
     if (isGraphInterrupt(err)) {
+      console.log("isGraphInterrupt", err);
       const payload = interruptPayloadFromError(err);
       if (payload) {
         const next = await patchFlowRun(run.id, {
@@ -258,7 +260,7 @@ export async function executeWorkflowRun(options: {
           status: "interrupted",
           currentNodeId: payload.nodeId,
         });
-        await emit({ type: "done" });
+        // await emit({ type: "done" });
         return next;
       }
     }

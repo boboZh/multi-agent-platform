@@ -55,7 +55,7 @@ export async function GET(
   );
   const encoder = new TextEncoder();
   const channel = runEventChannel(id);
-
+  let canceled = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let cursor = lastEventId;
@@ -64,14 +64,14 @@ export async function GET(
       let subscriber: ReturnType<typeof createRedisSubscriber> | null = null;
 
       const send = (row: BufferedSseEvent) => {
-        if (closed || row.id <= cursor) return;
+        if (closed || canceled || row.id <= cursor) return;
         cursor = row.id;
         if (row.event.type === "done") sentDone = true;
         controller.enqueue(encoder.encode(encodeWorkflowSse(row)));
       };
 
       const closeStream = () => {
-        if (closed) return;
+        if (closed || canceled) return;
         closed = true;
         try {
           controller.close();
@@ -88,6 +88,7 @@ export async function GET(
       };
 
       try {
+        console.log("replayBuffer", cursor);
         await replayBuffer();
         // 持久化兜底：Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
         if (cursor === 0) {
@@ -109,9 +110,11 @@ export async function GET(
         await subscriber.subscribe(channel);
         subscriber.on("message", (_ch: string, message: string) => {
           const parsed = parsePublishedSse(message);
+          console.log("subscribe: ", parsed);
           if (!parsed) return;
           send(parsed);
           if (parsed.event.type === "done") {
+            console.log("closeStream: ", parsed);
             closeStream();
           }
         });
@@ -129,7 +132,7 @@ export async function GET(
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "SSE 失败";
-        if (!closed) {
+        if (!closed && !canceled) {
           controller.enqueue(
             encoder.encode(
               encodeWorkflowSse({
@@ -145,6 +148,9 @@ export async function GET(
         }
         closeStream();
       }
+    },
+    cancel() {
+      canceled = true;
     },
   });
 

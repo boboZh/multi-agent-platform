@@ -30,6 +30,7 @@ type RunConsoleState = {
     dsl: WorkflowDocument;
     flowName: string;
     events: WorkflowSseEvent[];
+    lastEventId?: number;
   }) => void;
   applyEvent: (event: WorkflowSseEvent, eventId?: number) => void;
   setConnection: (connection: RunConnection) => void;
@@ -52,7 +53,7 @@ const empty = {
 
 export const useRunConsoleStore = create<RunConsoleState>((set) => ({
   ...empty,
-  hydrate: ({ run, dsl, flowName, events }) =>
+  hydrate: ({ run, dsl, flowName, events, lastEventId = 0 }) =>
     set({
       run,
       dsl,
@@ -61,10 +62,12 @@ export const useRunConsoleStore = create<RunConsoleState>((set) => ({
       interrupt: run.interrupt_payload,
       selectedNodeId: null,
       nodeStateCache: {},
-      lastEventId: 0,
+      lastEventId: lastEventId ?? 0, //
     }),
   applyEvent: (event, eventId) =>
     set((state) => {
+      console.log("applyEvent: ", eventId, state.lastEventId);
+
       if (shouldSkipSseEvent(state.lastEventId, eventId)) {
         return state;
       }

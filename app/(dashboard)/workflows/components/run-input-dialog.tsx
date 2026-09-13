@@ -82,9 +82,9 @@ export function RunInputDialog({
           <div className="space-y-3">
             {variables.map((variable) => (
               <label key={variable.key} className="block space-y-1 text-xs">
-                <span className="text-muted-foreground">
+                <span className="text-muted-foreground block pb-0.5">
                   {variable.label || variable.key}
-                  <span className="ml-1 font-mono text-[10px]">
+                  <span className="ml-1  font-mono text-[10px]">
                     {variable.key} · {START_VARIABLE_TYPE_LABELS[variable.type]}
                   </span>
                   {variable.required !== false ? " *" : ""}

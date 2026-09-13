@@ -22,9 +22,9 @@ import type { NodeStateView } from "@/lib/workflow-runtime/node-state";
 const RunCanvas = dynamic(
   () =>
     import("@/app/(dashboard)/runs/components/run-canvas").then(
-      (mod) => mod.RunCanvas,
+      (mod) => mod.RunCanvas
     ),
-  { ssr: false },
+  { ssr: false }
 );
 
 type Snapshot = {
@@ -109,6 +109,7 @@ export default function RunConsolePage({
     const open = () => {
       if (stopped) return;
       const after = useRunConsoleStore.getState().lastEventId;
+      console.log("open: ", after);
       const url =
         after > 0
           ? `/api/workflow/runs/${id}/events?after=${after}`
@@ -119,10 +120,12 @@ export default function RunConsolePage({
       es.onmessage = (message) => {
         attempt = 0;
         try {
+          console.log(message);
           const parsed: unknown = JSON.parse(message.data);
           if (!isWorkflowSseEvent(parsed)) return;
           const eventId = Number.parseInt(message.lastEventId, 10);
           applyEvent(parsed, Number.isFinite(eventId) ? eventId : undefined);
+          // (parsed.type === "run_status" && parsed.status === "interrupted")
           if (parsed.type === "done") {
             stopped = true;
             es.close();
@@ -132,7 +135,8 @@ export default function RunConsolePage({
           // 单帧坏 JSON 忽略
         }
       };
-      es.onerror = () => {
+      es.onerror = (error) => {
+        console.error("es.onerror", error);
         if (stopped) return;
         // CONNECTING：浏览器正在自带重连，不要 close 再 new，否则 /events 编译请求会叠成进程风暴。
         if (es.readyState === EventSource.CONNECTING) {
@@ -198,11 +202,13 @@ export default function RunConsolePage({
           setError(payload.errors?.[0]?.message ?? "resume 失败");
           return;
         }
+        console.log("resume", useRunConsoleStore.getState().events);
         hydrate({
           run: payload.run,
           dsl: useRunConsoleStore.getState().dsl!,
           flowName: useRunConsoleStore.getState().flowName,
           events: useRunConsoleStore.getState().events,
+          lastEventId: useRunConsoleStore.getState().lastEventId,
         });
         setSseNonce((n) => n + 1);
       } finally {

@@ -83,6 +83,16 @@ async function executeKnownTool(
     });
   }
 
+  if (name === "get_order_info") {
+    return JSON.stringify({
+      order_id: input.order_id,
+      order_status: "pending",
+      order_date: "2026-01-01",
+      amount: 2000,
+      currency: "CNY",
+    });
+  }
+
   return JSON.stringify({
     tool: name,
     input,

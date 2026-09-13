@@ -26,41 +26,41 @@ const toolsData = [
   {
     id: crypto.randomUUID(), // 手动生成合法 UUID 主键
     user_id: TEST_USER_ID,
-    name: "get_weather",
-    display_name: "获取天气",
+    name: "get_order_info",
+    display_name: "获取订单信息",
     description:
-      "根据指定城市名称查询当前的天气情况。返回包括温度和天气状态的信息。",
+      "根据指定订单ID查询订单信息。返回包括订单ID、订单状态、订单日期、订单金额、订单货币的信息。",
     tool_type: "explicit", // 跟你之前前端代码里的 .eq("tool_type", "explicit") 对应
     connection_config: {
       // 模拟工具的连接配置，实际场景下这里可以存 API 格式或所需参数
       schema: {
-        city: {
+        order_id: {
           type: "string",
-          description: "需要查询天气的城市名称，如：杭州",
+          description: "需要查询的订单ID，如：1234567890",
         },
       },
     },
   },
-  {
-    id: crypto.randomUUID(),
-    user_id: TEST_USER_ID,
-    name: "web_search",
-    display_name: "网络搜索",
-    description: "使用搜索引擎在互联网上查找最新的资讯、新闻或实时数据。",
-    tool_type: "explicit",
-    connection_config: {
-      engine: "duckduckgo",
-      max_results: 5,
-      // 👇 关键补充：告诉大模型这个工具需要什么入参
-      schema: {
-        query: {
-          type: "string",
-          description:
-            "需要搜索的关键词或完整句子，尽量精确以获得最佳搜索结果。",
-        },
-      },
-    },
-  },
+  // {
+  //   id: crypto.randomUUID(),
+  //   user_id: TEST_USER_ID,
+  //   name: "web_search",
+  //   display_name: "网络搜索",
+  //   description: "使用搜索引擎在互联网上查找最新的资讯、新闻或实时数据。",
+  //   tool_type: "explicit",
+  //   connection_config: {
+  //     engine: "duckduckgo",
+  //     max_results: 5,
+  //     // 👇 关键补充：告诉大模型这个工具需要什么入参
+  //     schema: {
+  //       query: {
+  //         type: "string",
+  //         description:
+  //           "需要搜索的关键词或完整句子，尽量精确以获得最佳搜索结果。",
+  //       },
+  //     },
+  //   },
+  // },
 ];
 
 // 4. 执行插入操作

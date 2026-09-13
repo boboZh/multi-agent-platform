@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 export async function POST(
   request: Request,
-  context: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
   let body: unknown;
@@ -42,6 +42,7 @@ export async function POST(
     interrupt_payload: null,
     error: null,
   });
+  console.log("resume route", parsed);
   scheduleWorkflowEngine({
     run,
     dsl: loaded.dsl,
