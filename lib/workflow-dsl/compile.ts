@@ -88,6 +88,12 @@ export type CompileResources = {
 
 export type CompileOptions = {
   checkpointer?: BaseCheckpointSaver | false;
+  /**
+   * dry-run 只验证「图能编出来」，不 invoke。
+   * HITL 的 checkpointer 是 resume 契约，校验/发布 API 不会挂 saver，
+   * 不能和真正跑图走同一条「缺 saver 就失败」的门闩。
+   */
+  dryRun?: boolean;
   resources?: CompileResources;
   userId?: string;
   createModel?: typeof createChatModel;
@@ -253,6 +259,7 @@ async function executeToolNode(
   config: ToolNodeConfig,
   resources: CompileResources
 ): Promise<Partial<WorkflowGraphState>> {
+  console.log("executeToolNode", state);
   if (!config.toolId) {
     throw new Error("工具节点缺少 toolId");
   }
@@ -292,6 +299,7 @@ async function executeAgentNode(
   resources: CompileResources,
   createModel: typeof createChatModel
 ): Promise<Partial<WorkflowGraphState>> {
+  console.log("executeAgentNode", state);
   if (!config.agentId) throw new Error("智能体节点缺少 agentId");
   const resource = resources.agents.get(config.agentId);
   if (!resource) throw new Error(`智能体 ${config.agentId} 未在编译资源中`);
@@ -342,6 +350,7 @@ function executeHumanReviewNode(
   config: HumanReviewNodeConfig,
   nodeId: string
 ): Partial<WorkflowGraphState> {
+  console.log("executeHumanReviewNode", state);
   const resume = interrupt({
     nodeId,
     kind: "human_review" as const,
@@ -349,6 +358,7 @@ function executeHumanReviewNode(
     form: config.formFields,
     snapshot: state.vars,
   });
+  console.log("executeHumanReviewNode2", resume);
   const patch =
     resume && typeof resume === "object" && !Array.isArray(resume)
       ? (resume as Record<string, unknown>)
@@ -367,6 +377,7 @@ async function executeConditionNode(
   config: ConditionNodeConfig,
   createModel: typeof createChatModel
 ): Promise<Partial<WorkflowGraphState>> {
+  console.log("executeConditionNode", state);
   const keys = config.branches.map((branch) => branch.key);
   if (config.mode === "expression") {
     return {
@@ -424,7 +435,8 @@ export async function compileWorkflow(
 
   const hasHitl = doc.nodes.some((node) => node.data.kind === "human_review");
   // interrupt 依赖 checkpointer 把挂起态写回去；缺 saver 时 resume 永远对不上。
-  if (hasHitl && !options.checkpointer) {
+  // dry-run 不 invoke、不 resume，只确认节点/边能编进 StateGraph，因此跳过这条运行时门闩。
+  if (hasHitl && !options.checkpointer && !options.dryRun) {
     return {
       ok: false,
       errors: [
@@ -524,12 +536,11 @@ export async function compileWorkflow(
  */
 export async function dryRunCompile(
   input: unknown,
-  options: CompileOptions = {},
+  options: CompileOptions = {}
 ): Promise<
-  | { ok: true; nodeCount: number; edgeCount: number }
-  | CompileFailure
+  { ok: true; nodeCount: number; edgeCount: number } | CompileFailure
 > {
-  const result = await compileWorkflow(input, options);
+  const result = await compileWorkflow(input, { ...options, dryRun: true });
   if (!result.ok) return result;
   return {
     ok: true,

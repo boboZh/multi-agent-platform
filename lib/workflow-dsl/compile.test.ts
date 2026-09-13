@@ -28,9 +28,7 @@ import { END } from "@langchain/langgraph";
 const AGENT_UUID = "11111111-1111-4111-8111-111111111111";
 const TOOL_UUID = "22222222-2222-4222-8222-222222222222";
 
-function emptyState(
-  vars: Record<string, unknown> = {},
-): WorkflowGraphState {
+function emptyState(vars: Record<string, unknown> = {}): WorkflowGraphState {
   return { messages: [], vars, lastAgentText: "", _route: "" };
 }
 
@@ -62,7 +60,7 @@ function agentRow(): AgentRow {
 function scriptedCreateModel(replies: string[]) {
   const queue = [...replies];
   const llm = RunnableLambda.from(
-    async () => new AIMessage(queue.shift() ?? ""),
+    async () => new AIMessage(queue.shift() ?? "")
   );
   Object.assign(llm, { bindTools: () => llm });
   return () => llm as unknown as BaseChatModel;
@@ -188,6 +186,33 @@ function expressionDoc(): WorkflowDocument {
   };
 }
 
+function humanReviewDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "审核图",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      node("human_review", "n_review"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      {
+        id: "e1",
+        source: "n_start",
+        target: "n_review",
+        data: { kind: "normal" },
+      },
+      {
+        id: "e2",
+        source: "n_review",
+        target: "n_end",
+        data: { kind: "normal" },
+      },
+    ],
+  };
+}
+
 describe("resolveStatePath / resolveInputMap", () => {
   it("按点号路径从 vars 取值", () => {
     const state = emptyState({ order_id: "A-1", nested: { n: 2 } });
@@ -220,26 +245,26 @@ describe("evaluateExpressionRoute", () => {
         "state.vars.need_human === true",
         emptyState({ need_human: true }),
         keys,
-        "no",
-      ),
+        "no"
+      )
     ).toBe("yes");
     expect(
       evaluateExpressionRoute(
         "state.vars.need_human === true",
         emptyState({ need_human: false }),
         keys,
-        "no",
-      ),
+        "no"
+      )
     ).toBe("no");
   });
 
   it("边界：表达式抛错或返回未知值时走 defaultBranch，避免整图崩溃", () => {
     expect(
-      evaluateExpressionRoute("state.vars.x.y.z", emptyState(), keys, "no"),
+      evaluateExpressionRoute("state.vars.x.y.z", emptyState(), keys, "no")
     ).toBe("no");
-    expect(
-      evaluateExpressionRoute("'maybe'", emptyState(), keys, "no"),
-    ).toBe("no");
+    expect(evaluateExpressionRoute("'maybe'", emptyState(), keys, "no")).toBe(
+      "no"
+    );
   });
 
   it("边界：表达式直接返回分支 key 字符串时按 key 跳而不是当布尔", () => {
@@ -248,8 +273,8 @@ describe("evaluateExpressionRoute", () => {
         "state.vars.route",
         emptyState({ route: "yes" }),
         keys,
-        "no",
-      ),
+        "no"
+      )
     ).toBe("yes");
   });
 });
@@ -292,7 +317,7 @@ describe("buildBranchPathMap", () => {
         },
       ],
       "n_cond",
-      new Set(["n_end"]),
+      new Set(["n_end"])
     );
     expect(map).toEqual({ approve: END, reject: "n_agent" });
   });
@@ -315,7 +340,7 @@ describe("compileWorkflow", () => {
           },
         ],
       },
-      "compile",
+      "compile"
     );
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -361,7 +386,10 @@ describe("compileWorkflow", () => {
           data: {
             kind: "agent",
             label: "智能体",
-            config: { agentId: AGENT_UUID, outputKey: DEFAULT_AGENT_OUTPUT_KEY },
+            config: {
+              agentId: AGENT_UUID,
+              outputKey: DEFAULT_AGENT_OUTPUT_KEY,
+            },
           },
         },
         node("end", "n_end"),
@@ -386,9 +414,9 @@ describe("compileWorkflow", () => {
     });
     expect(compiled.ok).toBe(false);
     if (compiled.ok) return;
-    expect(compiled.errors.some((issue) => issue.message.includes("找不到智能体"))).toBe(
-      true,
-    );
+    expect(
+      compiled.errors.some((issue) => issue.message.includes("找不到智能体"))
+    ).toBe(true);
   });
 
   it("工具节点按 inputMap 取值并写入 outputKey", async () => {
@@ -458,31 +486,7 @@ describe("compileWorkflow", () => {
   });
 
   it("边界：人工审核图在没有 checkpointer 时拒绝编译", async () => {
-    const doc: WorkflowDocument = {
-      schemaVersion: WORKFLOW_SCHEMA_VERSION,
-      name: "审核图",
-      startNodeId: "n_start",
-      nodes: [
-        node("start", "n_start"),
-        node("human_review", "n_review"),
-        node("end", "n_end"),
-      ],
-      edges: [
-        {
-          id: "e1",
-          source: "n_start",
-          target: "n_review",
-          data: { kind: "normal" },
-        },
-        {
-          id: "e2",
-          source: "n_review",
-          target: "n_end",
-          data: { kind: "normal" },
-        },
-      ],
-    };
-    const compiled = await compileWorkflow(doc, {
+    const compiled = await compileWorkflow(humanReviewDoc(), {
       checkpointer: false,
       resources: { agents: new Map(), tools: new Map() },
     });
@@ -535,10 +539,46 @@ describe("compileWorkflow", () => {
 
     const fail = await dryRunCompile(
       { schemaVersion: 1, name: "坏" },
-      { resources: { agents: new Map(), tools: new Map() } },
+      { resources: { agents: new Map(), tools: new Map() } }
     );
     expect(fail.ok).toBe(false);
     if (fail.ok) return;
     expect(fail.errors.length).toBeGreaterThan(0);
+  });
+
+  it("边界：省略 checkpointer 时人工审核图仍拒绝真正编译", async () => {
+    const compiled = await compileWorkflow(humanReviewDoc(), {
+      resources: { agents: new Map(), tools: new Map() },
+    });
+    expect(compiled.ok).toBe(false);
+    if (compiled.ok) return;
+    expect(compiled.errors[0]?.message).toContain("checkpointer");
+  });
+
+  it("边界：dryRunCompile 含人工审核且不传 checkpointer 仍应通过", async () => {
+    const ok = await dryRunCompile(humanReviewDoc(), {
+      resources: { agents: new Map(), tools: new Map() },
+    });
+    expect(ok).toEqual({ ok: true, nodeCount: 3, edgeCount: 2 });
+  });
+
+  it("边界：dryRunCompile 即使显式 checkpointer:false 也不因 HITL 失败", async () => {
+    const ok = await dryRunCompile(humanReviewDoc(), {
+      checkpointer: false,
+      resources: { agents: new Map(), tools: new Map() },
+    });
+    expect(ok.ok).toBe(true);
+  });
+
+  it("边界：dryRunCompile 对空对象输入返回 schema 错误而不是 checkpointer 错误", async () => {
+    const fail = await dryRunCompile(
+      {},
+      { resources: { agents: new Map(), tools: new Map() } }
+    );
+    expect(fail.ok).toBe(false);
+    if (fail.ok) return;
+    expect(fail.errors.some((e) => e.message.includes("checkpointer"))).toBe(
+      false
+    );
   });
 });
