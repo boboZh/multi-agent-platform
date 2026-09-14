@@ -42,7 +42,6 @@ export async function POST(
     interrupt_payload: null,
     error: null,
   });
-  console.log("resume route", parsed);
   scheduleWorkflowEngine({
     run,
     dsl: loaded.dsl,

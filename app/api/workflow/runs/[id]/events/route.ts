@@ -88,7 +88,6 @@ export async function GET(
       };
 
       try {
-        console.log("replayBuffer", cursor);
         await replayBuffer();
         // 持久化兜底：Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
         if (cursor === 0) {
@@ -110,11 +109,9 @@ export async function GET(
         await subscriber.subscribe(channel);
         subscriber.on("message", (_ch: string, message: string) => {
           const parsed = parsePublishedSse(message);
-          console.log("subscribe: ", parsed);
           if (!parsed) return;
           send(parsed);
           if (parsed.event.type === "done") {
-            console.log("closeStream: ", parsed);
             closeStream();
           }
         });

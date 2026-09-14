@@ -213,7 +213,6 @@ export async function executeWorkflowRun(options: {
       tasks: state.tasks,
     });
     if (interrupt) {
-      console.log("interruptPayloadFromState", state);
       const next = await patchFlowRun(run.id, {
         status: "interrupted",
         interrupt_payload: interrupt,
@@ -245,9 +244,7 @@ export async function executeWorkflowRun(options: {
     await emit({ type: "done" });
     return next;
   } catch (err) {
-    console.error("executeWorkflowRun error: ", err);
     if (isGraphInterrupt(err)) {
-      console.log("isGraphInterrupt", err);
       const payload = interruptPayloadFromError(err);
       if (payload) {
         const next = await patchFlowRun(run.id, {

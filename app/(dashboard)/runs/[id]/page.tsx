@@ -109,7 +109,6 @@ export default function RunConsolePage({
     const open = () => {
       if (stopped) return;
       const after = useRunConsoleStore.getState().lastEventId;
-      console.log("open: ", after);
       const url =
         after > 0
           ? `/api/workflow/runs/${id}/events?after=${after}`
@@ -202,7 +201,6 @@ export default function RunConsolePage({
           setError(payload.errors?.[0]?.message ?? "resume 失败");
           return;
         }
-        console.log("resume", useRunConsoleStore.getState().events);
         hydrate({
           run: payload.run,
           dsl: useRunConsoleStore.getState().dsl!,
@@ -240,6 +238,7 @@ export default function RunConsolePage({
         dsl: useRunConsoleStore.getState().dsl!,
         flowName: useRunConsoleStore.getState().flowName,
         events: useRunConsoleStore.getState().events,
+        lastEventId: useRunConsoleStore.getState().lastEventId,
       });
       setSseNonce((n) => n + 1);
     } finally {

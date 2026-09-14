@@ -66,8 +66,6 @@ export const useRunConsoleStore = create<RunConsoleState>((set) => ({
     }),
   applyEvent: (event, eventId) =>
     set((state) => {
-      console.log("applyEvent: ", eventId, state.lastEventId);
-
       if (shouldSkipSseEvent(state.lastEventId, eventId)) {
         return state;
       }
