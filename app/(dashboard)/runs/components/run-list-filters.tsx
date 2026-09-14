@@ -21,6 +21,7 @@ export function RunListFilters({
     const params = new URLSearchParams();
     if (nextStatus) params.set("status", nextStatus);
     if (flowId) params.set("flowId", flowId);
+    // 换筛选条件后从第 1 页重看，否则会停在空的高页码。
     const qs = params.toString();
     router.push(qs ? `/runs?${qs}` : "/runs");
   }

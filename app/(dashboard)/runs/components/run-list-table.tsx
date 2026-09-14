@@ -16,16 +16,16 @@ export function RunListTable({ items }: { items: RunListItem[] }) {
   const router = useRouter();
   if (items.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-primary/20 px-6 py-16 text-center text-sm text-muted-foreground">
+      <div className="flex h-full min-h-0 items-center justify-center rounded-xl border border-dashed border-primary/20 px-6 py-16 text-center text-sm text-muted-foreground">
         还没有运行记录。从已发布的工作流点「运行」后会出现在这里。
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-primary/10 bg-card">
+    <div className="h-full min-h-0 overflow-auto rounded-xl border border-primary/10 bg-card">
       <table className="w-full text-left text-sm">
-        <thead className="border-b border-primary/10 bg-muted/40 text-xs text-muted-foreground">
+        <thead className="sticky top-0 z-10 border-b border-primary/10 bg-muted text-xs text-muted-foreground">
           <tr>
             <th className="px-4 py-2.5 font-medium">工作流</th>
             <th className="px-4 py-2.5 font-medium">版本</th>

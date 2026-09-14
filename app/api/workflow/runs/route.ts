@@ -6,6 +6,12 @@ import {
   type FlowRunRow,
   type FlowRunStatus,
 } from "@/lib/workflow-dsl/tables";
+import {
+  clampPage,
+  paginationMeta,
+  parseRunListPagination,
+  toInclusiveRange,
+} from "@/app/(dashboard)/runs/lib/pagination";
 
 export const runtime = "nodejs";
 
@@ -26,6 +32,7 @@ function dbStatuses(filter: ListStatus): FlowRunStatus[] {
 
 /**
  * 运行列表。status=running 把 pending 算进去，cancelled 不出现在四个主筛选项里。
+ * exact count + inclusive range 做服务端分页；页码越界时夹回最后一页再查，避免空窗。
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -34,28 +41,44 @@ export async function GET(request: Request) {
     return jsonError([issue("非法 status", ["status"])], 400);
   }
   const flowId = url.searchParams.get("flowId")?.trim() || "";
-  const limitRaw = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
-  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 50;
+  const parsed = parseRunListPagination({
+    page: url.searchParams.get("page"),
+    pageSize: url.searchParams.get("pageSize"),
+  });
 
   const userId = mockUserId();
   const supabase = createSupabaseAdmin();
-  let query = supabase
-    .from("flow_runs")
-    .select(FLOW_RUN_SELECT_COLUMNS)
-    .eq("user_id", userId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
 
-  if (statusParam) {
-    query = query.in("status", dbStatuses(statusParam));
-  }
-  if (flowId) {
-    query = query.eq("flow_id", flowId);
+  async function fetchPage(page: number) {
+    const { from, to } = toInclusiveRange(page, parsed.pageSize);
+    let query = supabase
+      .from("flow_runs")
+      .select(FLOW_RUN_SELECT_COLUMNS, { count: "exact" })
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .range(from, to);
+    if (statusParam) {
+      query = query.in("status", dbStatuses(statusParam));
+    }
+    if (flowId) {
+      query = query.eq("flow_id", flowId);
+    }
+    return query;
   }
 
-  const { data, error } = await query;
-  if (error) return jsonError([issue(error.message)], 500);
-  const runs = (data ?? []) as FlowRunRow[];
+  const first = await fetchPage(parsed.page);
+  if (first.error) return jsonError([issue(first.error.message)], 500);
+
+  const total = first.count ?? 0;
+  const page = clampPage(parsed.page, total, parsed.pageSize);
+  let runs = (first.data ?? []) as FlowRunRow[];
+
+  if (page !== parsed.page) {
+    const second = await fetchPage(page);
+    if (second.error) return jsonError([issue(second.error.message)], 500);
+    runs = (second.data ?? []) as FlowRunRow[];
+  }
+
   const flowIds = [...new Set(runs.map((row) => row.flow_id))];
   const names = new Map<string, string>();
   if (flowIds.length > 0) {
@@ -68,12 +91,14 @@ export async function GET(request: Request) {
     }
   }
 
+  const meta = paginationMeta(page, parsed.pageSize, total);
   return Response.json({
     ok: true,
     items: runs.map((run) => ({
       ...run,
       flowName: names.get(run.flow_id) ?? "未命名工作流",
     })),
+    ...meta,
   });
 }
 
