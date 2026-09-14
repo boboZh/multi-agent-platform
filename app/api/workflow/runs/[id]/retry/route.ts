@@ -14,7 +14,7 @@ export const runtime = "nodejs";
  */
 export async function POST(
   request: Request,
-  context: { params: Promise<{ id: string }> },
+  context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
   let body: unknown;
@@ -24,7 +24,9 @@ export async function POST(
     return jsonError([issue("请求体不是合法 JSON")], 400);
   }
   const nodeId =
-    body && typeof body === "object" && typeof (body as { nodeId?: unknown }).nodeId === "string"
+    body &&
+    typeof body === "object" &&
+    typeof (body as { nodeId?: unknown }).nodeId === "string"
       ? (body as { nodeId: string }).nodeId.trim()
       : "";
   if (!nodeId) return jsonError([issue("缺少 nodeId", ["nodeId"])], 400);
@@ -36,10 +38,12 @@ export async function POST(
   const { run, dsl } = loaded;
   const allowedFailed = run.status === "failed";
   const allowedInterrupt =
-    run.status === "interrupted" &&
-    run.interrupt_payload?.nodeId === nodeId;
+    run.status === "interrupted" && run.interrupt_payload?.nodeId === nodeId;
   if (!allowedFailed && !allowedInterrupt) {
-    return jsonError([issue("当前状态不允许重试该节点", ["nodeId"], nodeId)], 409);
+    return jsonError(
+      [issue("当前状态不允许重试该节点", ["nodeId"], nodeId)],
+      409
+    );
   }
 
   const checkpointer = await getWorkflowCheckpointer();
@@ -57,8 +61,14 @@ export async function POST(
   const checkpointId = findRetryCheckpointId(snapshots, nodeId);
   if (!checkpointId) {
     return jsonError(
-      [issue("找不到该节点执行前的 checkpoint，无法时间旅行", ["nodeId"], nodeId)],
-      409,
+      [
+        issue(
+          "找不到该节点执行前的 checkpoint，无法时间旅行",
+          ["nodeId"],
+          nodeId
+        ),
+      ],
+      409
     );
   }
 

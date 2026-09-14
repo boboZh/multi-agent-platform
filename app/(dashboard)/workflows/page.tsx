@@ -10,6 +10,7 @@ import {
   Loader2,
   MoreHorizontal,
   Pencil,
+  Play,
   Plus,
   Search,
   SlidersHorizontal,
@@ -34,6 +35,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { UUID } from "@/lib/workflow-dsl/tables";
+import type { StartVariable, WorkflowIssue } from "@/lib/workflow-dsl/schema";
+import { startVariablesFromDsl } from "@/lib/workflow-dsl/start-variables";
 import { FLOW_SELECT_COLUMNS, type FlowRecord } from "./types";
 import {
   descriptionSnippet,
@@ -44,12 +47,14 @@ import {
   summarizeFlowDsl,
   type FlowDslSummary,
 } from "./utils";
+import { RunInputDialog } from "./components/run-input-dialog";
 
 /**
- * 工作流目录：只做「读 + 删 + 入口」。
+ * 工作流目录：读、删、入口，以及按已发布版本启动运行。
  *
  * 新增与编辑一律跳到 /workflows/[id] 编辑器页 —— 工作流的可编辑内容是整张图（节点、连线、
- * 分支配置），塞进列表弹窗既放不下也无法校验拓扑，所以这里不出现任何表单。
+ * 分支配置），塞进列表弹窗既放不下也无法校验拓扑。运行交互与编辑器顶栏一致：未发布不能跑，
+ * 有 start.variables 先弹同一套入参表单，再 POST /api/workflow/run 并跳监控页。
  */
 
 /** 列表用派生视图：把「每行要跑一次 Zod」的结果缓存下来，见下方 useMemo 说明。 */
@@ -100,6 +105,13 @@ export default function WorkflowsPage() {
   const [query, setQuery] = useState("");
   const [gridCompact, setGridCompact] = useState(false);
   const [deletingId, setDeletingId] = useState<UUID | null>(null);
+  const [runningId, setRunningId] = useState<UUID | null>(null);
+  const [runInputOpen, setRunInputOpen] = useState(false);
+  /** 弹窗绑在具体卡片上：variables 来自该行 dsl，提交时用对应 flowId，避免串单。 */
+  const [runTarget, setRunTarget] = useState<{
+    flowId: UUID;
+    variables: StartVariable[];
+  } | null>(null);
 
   /**
    * 派生一次就够的重活：summarizeFlowDsl 内部要跑 Zod 解析，
@@ -172,6 +184,61 @@ export default function WorkflowsPage() {
     } finally {
       setRefreshing(false);
     }
+  }
+
+  /**
+   * 启动一次运行。口径与编辑器页相同：只跑已发布版本，入参走 start.variables。
+   * 列表没有未保存草稿，所以不需要 dirty 拦截。
+   */
+  async function startRun(flowId: UUID, vars: Record<string, unknown>) {
+    if (runningId) return;
+    const flow = flows.find((item) => item.id === flowId);
+    if (flow?.status !== "published") {
+      setError("请先发布工作流再运行。");
+      return;
+    }
+    setRunningId(flowId);
+    setError(null);
+    try {
+      const response = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowId, input: { vars } }),
+      });
+      const payload = (await response.json()) as
+        | { ok: true; run: { id: string } }
+        | { ok: false; errors?: WorkflowIssue[] };
+      if (!payload.ok) {
+        const message = payload.errors?.[0]?.message ?? "启动运行失败。";
+        setError(message);
+        throw new Error(message);
+      }
+      setRunInputOpen(false);
+      setRunTarget(null);
+      router.push(`/runs/${payload.run.id}`);
+    } catch (e: unknown) {
+      const message = getErrorMessage(e) ?? "启动运行失败。";
+      setError(message);
+      throw e instanceof Error ? e : new Error(message);
+    } finally {
+      setRunningId(null);
+    }
+  }
+
+  function handleRun(flow: FlowRecord) {
+    if (runningId) return;
+    if (flow.status !== "published") {
+      setError("请先发布工作流再运行。");
+      return;
+    }
+    setError(null);
+    const variables = startVariablesFromDsl(flow.dsl);
+    if (variables.length > 0) {
+      setRunTarget({ flowId: flow.id, variables });
+      setRunInputOpen(true);
+      return;
+    }
+    void startRun(flow.id, {}).catch(() => undefined);
   }
 
   /**
@@ -391,20 +458,40 @@ export default function WorkflowsPage() {
                 </CardContent>
 
                 <CardFooter
-                  className="justify-between"
-                  // 卡片本身跳编辑器；底部按钮必须拦住冒泡，否则「删除」会先被路由走掉。
+                  className="justify-between gap-2"
+                  // 卡片本身跳编辑器；底部按钮必须拦住冒泡，否则「删除 / 运行」会先被路由走掉。
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <Button
-                    asChild
-                    variant="outline"
-                    className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
-                  >
-                    <Link href={`/workflows/${flow.id}`}>
-                      <Pencil className="h-4 w-4" />
-                      编辑编排
-                    </Link>
-                  </Button>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Button
+                      asChild
+                      variant="outline"
+                      className="border-primary/30 text-primary hover:bg-primary/10 hover:text-primary"
+                    >
+                      <Link href={`/workflows/${flow.id}`}>
+                        <Pencil className="h-4 w-4" />
+                        编辑编排
+                      </Link>
+                    </Button>
+                    <Button
+                      onClick={() => handleRun(flow)}
+                      disabled={
+                        Boolean(runningId) || flow.status !== "published"
+                      }
+                    >
+                      {runningId === flow.id ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          启动中
+                        </>
+                      ) : (
+                        <>
+                          <Play className="h-4 w-4" />
+                          运行
+                        </>
+                      )}
+                    </Button>
+                  </div>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -442,6 +529,19 @@ export default function WorkflowsPage() {
           </div>
         )}
       </div>
+
+      {runInputOpen && runTarget ? (
+        <RunInputDialog
+          open={runInputOpen}
+          variables={runTarget.variables}
+          submitting={runningId === runTarget.flowId}
+          onOpenChange={(open) => {
+            setRunInputOpen(open);
+            if (!open) setRunTarget(null);
+          }}
+          onSubmit={(vars) => startRun(runTarget.flowId, vars)}
+        />
+      ) : null}
     </div>
   );
 }
