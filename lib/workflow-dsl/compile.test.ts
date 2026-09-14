@@ -19,6 +19,7 @@ import {
   buildBranchPathMap,
   evaluateExpressionRoute,
   pickBranchKey,
+  pickExpressionBranchKey,
   resolveInputMap,
   resolveStatePath,
   type WorkflowGraphState,
@@ -276,6 +277,53 @@ describe("evaluateExpressionRoute", () => {
         "no"
       )
     ).toBe("yes");
+  });
+
+  it("比较表达式在 true/false 分支上能命中 true，而不是掉进 defaultBranch", () => {
+    expect(
+      evaluateExpressionRoute(
+        "state.vars.order_info.amount > 200",
+        emptyState({ order_info: { amount: 2000 } }),
+        ["true", "false"],
+        "false"
+      )
+    ).toBe("true");
+  });
+});
+
+describe("pickExpressionBranchKey", () => {
+  it("边界：分支列表不是数组或为空时直接走兜底，避免 includes 崩掉", () => {
+    expect(
+      pickExpressionBranchKey(true, null as unknown as string[], "no")
+    ).toBe("no");
+    expect(pickExpressionBranchKey(true, [], "fallback")).toBe("fallback");
+  });
+
+  it("边界：非法类型和无关字符串不当真值，防止 maybe 误入 yes", () => {
+    const keys = ["yes", "no"];
+    expect(pickExpressionBranchKey("maybe", keys, "no")).toBe("no");
+    expect(pickExpressionBranchKey({ ok: true }, keys, "no")).toBe("no");
+    expect(pickExpressionBranchKey(2, keys, "no")).toBe("no");
+    expect(pickExpressionBranchKey(undefined, keys, "no")).toBe("no");
+  });
+
+  it("边界：字符串 reject 精确匹配，不会因为真值同义词撞到 approve", () => {
+    expect(
+      pickExpressionBranchKey("reject", ["approve", "reject"], "approve")
+    ).toBe("reject");
+    expect(pickExpressionBranchKey("YES", ["yes", "no"], "no")).toBe("yes");
+  });
+
+  it("布尔和 0/1 按声明顺序映射到 yes|true|1 或 no|false|0", () => {
+    expect(pickExpressionBranchKey(true, ["true", "false"], "false")).toBe(
+      "true"
+    );
+    expect(pickExpressionBranchKey(false, ["true", "false"], "false")).toBe(
+      "false"
+    );
+    expect(pickExpressionBranchKey(1, ["yes", "no"], "no")).toBe("yes");
+    expect(pickExpressionBranchKey(0, ["yes", "no"], "no")).toBe("no");
+    expect(pickExpressionBranchKey(true, ["yes", "true"], "no")).toBe("yes");
   });
 });
 

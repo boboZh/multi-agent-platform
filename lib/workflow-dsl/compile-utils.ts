@@ -121,13 +121,57 @@ export function pickBranchKey(
   return fallback;
 }
 
+/** 布尔真对应的分支同义词；只认这些，避免把任意非空字符串当成 yes。 */
+const TRUTHY_BRANCH_ALIASES = new Set(["yes", "true", "1"]);
+const FALSY_BRANCH_ALIASES = new Set(["no", "false", "0"]);
+
+function isBooleanBit(value: unknown): value is boolean | 0 | 1 {
+  return value === true || value === false || value === 0 || value === 1;
+}
+
+/**
+ * 把表达式求值结果对齐到某个 branch key。
+ * 入参：expr-eval 的 result、当前节点分支、兜底 key。
+ * 步骤：字符串（含大小写差）精确匹配分支 → 仅布尔/0/1 走 yes|true|1 与 no|false|0 → 其余 default。
+ * 同义词按 branches 声明顺序取第一个，避免 yes/true 并存时随机。
+ */
+export function pickExpressionBranchKey(
+  result: unknown,
+  branchKeys: string[],
+  defaultBranch: string
+): string {
+  if (!Array.isArray(branchKeys) || branchKeys.length === 0) {
+    return defaultBranch;
+  }
+
+  if (typeof result === "string") {
+    if (branchKeys.includes(result)) return result;
+    const lowered = result.trim().toLowerCase();
+    if (lowered) {
+      const hit = branchKeys.find((key) => key.toLowerCase() === lowered);
+      if (hit) return hit;
+    }
+  }
+
+  if (isBooleanBit(result)) {
+    const aliases =
+      result === true || result === 1
+        ? TRUTHY_BRANCH_ALIASES
+        : FALSY_BRANCH_ALIASES;
+    const hit = branchKeys.find((key) => aliases.has(key.toLowerCase()));
+    if (hit) return hit;
+  }
+
+  return defaultBranch;
+}
+
 /**
  * 表达式路由。
  *
  * 入参：DSL 上的 expression、当前 state、分支 key 列表、兜底分支。
  * 出参：某个 branch key。
  * 步骤：把 `===` 换成 expr-eval 能认的 `==` → 以 `{ state }` 为上下文求值 →
- * 布尔映射到 yes/no（若存在）→ 字符串若是合法 key 则采用 → 其余走 defaultBranch。
+ * 字符串若是合法 key 则采用 → 布尔/0/1 映射到 yes|true|1 / no|false|0 → 其余 defaultBranch。
  *
  * 画布默认表达式写的是 `===`，而 expr-eval 不认严格相等；静默替换是为了让默认草稿能跑，
  * 不是为了支持任意 JS。求值失败同样回落 defaultBranch，避免把一次脏表达式变成整图崩溃。
@@ -153,16 +197,7 @@ export function evaluateExpressionRoute(
         _route: graphState._route,
       },
     } as never);
-    // 布尔值映射到 yes/no
-    if (typeof result === "boolean" || result === 0 || result === 1) {
-      const truthy = Boolean(result);
-      const mapped = truthy ? "yes" : "no";
-      if (branchKeys.includes(mapped)) return mapped;
-    }
-    // 字符串直出
-    if (typeof result === "string" && branchKeys.includes(result))
-      return result;
-    return defaultBranch;
+    return pickExpressionBranchKey(result, branchKeys, defaultBranch);
   } catch {
     return defaultBranch;
   }
