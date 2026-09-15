@@ -455,7 +455,6 @@ export default function WorkflowEditorPage({
    * 1. 先 sanitize：剥掉 reactflow 挂在节点上的 selected/dragging 等瞬时字段，
    *    顺带确认文档形状合法。不做这一步，选中态会被一起写进 dsl。
    * 2. 名称留空按「未命名工作流」入库；dsl.name 与行上的 name 同步，避免两处标题打架。
-   * 3. 新建必须显式带 flow_data —— 迁移期遗留列，NOT NULL 且无默认值，漏掉会被 23502 拒。
    *
    * 注意这里**不拦截拓扑错误**：草稿本来就允许半成品，能不能跑由后续 compile 档把关。
    */
@@ -690,8 +689,7 @@ export default function WorkflowEditorPage({
       {dslBroken ? (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-sm text-amber-800">
           <span>
-            这条工作流的 DSL 不符合当前 schema（多为旧 flow_data
-            迁移数据），已用空图占位。保存会覆盖原数据。
+            这条工作流的 DSL 不符合当前 schema，已用空图占位。保存会覆盖原数据。
           </span>
           <Button variant="outline" size="sm" onClick={resetDoc}>
             重置为空图

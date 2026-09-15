@@ -23,8 +23,6 @@ export type FlowRow = {
   status: FlowStatus;
   version: number;
   dsl: WorkflowDocument | Record<string, never>;
-  /** Legacy column; new code reads/writes `dsl`. */
-  flow_data: unknown;
   created_at: string | null;
   updated_at: string;
 };
