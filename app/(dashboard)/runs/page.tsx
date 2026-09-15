@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Activity, Loader2 } from "lucide-react";
+import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { RunListFilters } from "@/app/(dashboard)/runs/components/run-list-filters";
 import { RunListPagination } from "@/app/(dashboard)/runs/components/run-list-pagination";
 import {
@@ -17,6 +17,7 @@ import {
   isListStatusFilter,
   type ListStatusFilter,
 } from "@/app/(dashboard)/runs/lib/status";
+import { Button } from "@/components/ui/button";
 
 function runsListHref(input: {
   status: ListStatusFilter | null;
@@ -45,7 +46,9 @@ function RunsPageInner() {
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -56,11 +59,15 @@ function RunsPageInner() {
     return `/api/workflow/runs?${params.toString()}`;
   }, [status, flowId, page]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
+  const load = useCallback(
+    async (mode: "initial" | "refresh" = "initial") => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      if (mode === "refresh") setRefreshing(true);
+      else setLoading(true);
       try {
-        const response = await fetch(query);
+        const response = await fetch(query, { cache: "no-store", signal: ac.signal });
         const payload = (await response.json()) as
           | {
               ok: true;
@@ -70,7 +77,7 @@ function RunsPageInner() {
               totalPages: number;
             }
           | { ok: false; errors?: Array<{ message: string }> };
-        if (cancelled) return;
+        if (ac.signal.aborted) return;
         if (!payload.ok) {
           setError(payload.errors?.[0]?.message ?? "加载失败");
           return;
@@ -83,21 +90,23 @@ function RunsPageInner() {
         if (payload.page !== page) {
           router.replace(runsListHref({ status, flowId, page: payload.page }));
         }
-      } catch {
-        if (!cancelled) setError("加载运行列表失败");
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError("加载运行列表失败");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!ac.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
-    }
-    void load();
-    const timer = window.setInterval(() => {
-      void load();
-    }, 8000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [query, page, status, flowId, router]);
+    },
+    [query, page, status, flowId, router],
+  );
+
+  useEffect(() => {
+    void load("initial");
+    return () => abortRef.current?.abort();
+  }, [load]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-6">
@@ -107,11 +116,21 @@ function RunsPageInner() {
           运行监控
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          按 thread 查看历史运行。进行中的记录会自动刷新。
+          按 thread 查看历史运行。最新状态请手动刷新。
         </p>
       </header>
-      <div className="shrink-0">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <RunListFilters status={status as ListStatusFilter | null} flowId={flowId} />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={loading || refreshing}
+          onClick={() => void load("refresh")}
+        >
+          <RefreshCw className={refreshing ? "animate-spin" : undefined} />
+          刷新
+        </Button>
       </div>
       {error ? (
         <p className="mt-4 shrink-0 text-sm text-destructive">{error}</p>
