@@ -19,6 +19,7 @@ import {
   renameConditionBranch,
   renameForkLane,
   sanitizeDocumentForSave,
+  setForkLaneLabel,
   updateNode,
 } from "./document";
 
@@ -94,6 +95,27 @@ describe("addNode", () => {
     expect(node?.position).toEqual({ x: 10, y: 20 });
     // 刚拖进来就必须能过 draft 校验，否则用户没法保存半成品草稿。
     expect(parseWorkflowDocument(doc, "draft").ok).toBe(true);
+  });
+
+  it("拖入 Fork / Join 时 type 对齐，Fork 默认两条通道、Join 只有 wait:all", () => {
+    const fork = addNode(createEmptyWorkflowDocument("测试"), "fork", {
+      x: 0,
+      y: 0,
+    });
+    const forkNode = fork.doc.nodes.find((item) => item.id === fork.nodeId);
+    expect(forkNode?.type).toBe("forkNode");
+    expect(forkNode?.data.kind === "fork" && forkNode.data.config.lanes).toEqual([
+      { key: "lane_1", label: "通道 1" },
+      { key: "lane_2", label: "通道 2" },
+    ]);
+
+    const join = addNode(fork.doc, "join", { x: 0, y: 80 });
+    const joinNode = join.doc.nodes.find((item) => item.id === join.nodeId);
+    expect(joinNode?.type).toBe("joinNode");
+    expect(joinNode?.data.kind === "join" && joinNode.data.config).toEqual({
+      wait: "all",
+    });
+    expect(parseWorkflowDocument(join.doc, "draft").ok).toBe(true);
   });
 });
 
@@ -471,7 +493,15 @@ describe("Fork / Join 画布连线与通道 CRUD", () => {
       "lane_3",
     ]);
 
-    const result = connect(added.doc, {
+    const { doc: withAgent } = addNode(added.doc, "agent", { x: 0, y: 200 });
+    const lane1 = connect(withAgent, {
+      source: "n_fork",
+      target: "n_agent",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    if (!lane1.ok) throw new Error("夹具准备失败");
+    const result = connect(lane1.doc, {
       source: "n_fork",
       target: "n_end",
       sourceHandle: "lane_3",
@@ -479,8 +509,12 @@ describe("Fork / Join 画布连线与通道 CRUD", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const edge = result.doc.edges.find((item) => item.sourceHandle === "lane_3");
-    expect(edge?.data).toEqual({ kind: "lane", laneKey: "lane_3" });
+    const outgoing = result.doc.edges.filter((edge) => edge.source === "n_fork");
+    expect(outgoing).toHaveLength(2);
+    expect(outgoing.map((edge) => edge.data)).toEqual([
+      { kind: "lane", laneKey: "lane_1" },
+      { kind: "lane", laneKey: "lane_3" },
+    ]);
   });
 
   it("同一通道 handle 再次连线时替换旧边而不是叠加", () => {
@@ -573,6 +607,23 @@ describe("Fork / Join 画布连线与通道 CRUD", () => {
     expect(edge?.data).toEqual({ kind: "lane", laneKey: "market" });
   });
 
+  it("改通道展示名只动 label，不改边的 laneKey", () => {
+    const connected = connect(docWithFork(), {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    if (!connected.ok) throw new Error("夹具准备失败");
+    const next = setForkLaneLabel(connected.doc, "n_fork", "lane_1", "市场调研");
+    expect(forkConfig(next, "n_fork").lanes[0]).toEqual({
+      key: "lane_1",
+      label: "市场调研",
+    });
+    const edge = next.edges.find((item) => item.source === "n_fork");
+    expect(edge?.data).toEqual({ kind: "lane", laneKey: "lane_1" });
+  });
+
   it("边界：未知 handle、fork 直连 fork、以及超上限增通道都被拒绝", () => {
     const forkA = docWithFork();
     const { doc: twoForks } = addNode(forkA, "fork", { x: 300, y: 100 });
@@ -611,6 +662,12 @@ describe("Fork / Join 画布连线与通道 CRUD", () => {
     expect(removeForkLane(base, "n_start", "lane_1").ok).toBe(false);
     expect(renameForkLane(base, "n_start", "lane_1", "lane_x").ok).toBe(false);
     expect(renameForkLane(docWithFork(), "n_fork", "lane_1", "1bad").ok).toBe(
+      false,
+    );
+    expect(renameForkLane(docWithFork(), "n_fork", "lane_1", "lane_2").ok).toBe(
+      false,
+    );
+    expect(renameForkLane(docWithFork(), "n_fork", "ghost", "lane_x").ok).toBe(
       false,
     );
   });
