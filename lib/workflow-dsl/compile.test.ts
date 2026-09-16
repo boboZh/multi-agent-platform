@@ -14,7 +14,11 @@ import {
   parseWorkflowDocument,
   type WorkflowDocument,
 } from "@/lib/workflow-dsl/schema";
-import { compileWorkflow, dryRunCompile, type CompiledWorkflowApp } from "@/lib/workflow-dsl/compile";
+import {
+  compileWorkflow,
+  dryRunCompile,
+  type CompiledWorkflowApp,
+} from "@/lib/workflow-dsl/compile";
 import {
   buildBranchPathMap,
   collectStaticControlEdges,
@@ -777,12 +781,137 @@ function twoRegionDoc(): WorkflowDocument {
   };
 }
 
+function parallelNToolDoc(laneCount: number): WorkflowDocument {
+  const tools = Array.from({ length: laneCount }, (_, index) =>
+    toolWithOutput(`n_t${index + 1}`, `out_${index + 1}`)
+  );
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: `并行 N=${laneCount}`,
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", laneCount),
+      ...tools,
+      node("join", "n_join"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      ...tools.map((tool, index) =>
+        laneEdge(`e_lane_${index + 1}`, "n_fork", tool.id, `lane_${index + 1}`)
+      ),
+      ...tools.map((tool, index) =>
+        normalEdge(`e_join_${index + 1}`, tool.id, "n_join")
+      ),
+      normalEdge("e_end", "n_join", "n_end"),
+    ],
+  };
+}
+
+function expressionCondition(
+  id: string,
+  expression: string,
+  branches: Array<{ key: string; label: string }>,
+  defaultBranch: string
+) {
+  return {
+    id,
+    type: NODE_TYPE_BY_KIND.condition,
+    position: { x: 0, y: 0 },
+    data: {
+      kind: "condition" as const,
+      label: "条件",
+      config: {
+        mode: "expression" as const,
+        expression,
+        branches,
+        defaultBranch,
+      },
+    },
+  };
+}
+
+function branchEdge(id: string, source: string, target: string, key: string) {
+  return {
+    id,
+    source,
+    target,
+    sourceHandle: key,
+    data: { kind: "branch" as const, branchKey: key },
+  };
+}
+
+/**
+ * Join → 主笔 → Condition；revise 打回主笔（两条入边必须是 OR）。
+ * 若误把主笔的两条边编成屏障，会等 Condition 写入才调度，而 Condition 在主笔下游 → 主笔第一轮永不执行。
+ * JoinA ───────→ 主笔  → Condition
+                  ↑ revise  │
+                  └─────────┘
+ */
+function reviseBackToWriterDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "打回主笔",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", 2),
+      toolWithOutput("n_aa", "out_aa"),
+      toolWithOutput("n_zz", "out_zz"),
+      node("join", "n_join"),
+      agentWithOutput("n_writer", DEFAULT_AGENT_OUTPUT_KEY),
+      expressionCondition(
+        "n_cond",
+        "state.lastAgentText",
+        [
+          { key: "revise", label: "修订" },
+          { key: "pass", label: "通过" },
+        ],
+        "pass"
+      ),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      laneEdge("e_lane_1", "n_fork", "n_aa", "lane_1"),
+      laneEdge("e_lane_2", "n_fork", "n_zz", "lane_2"),
+      normalEdge("e_aa_join", "n_aa", "n_join"),
+      normalEdge("e_zz_join", "n_zz", "n_join"),
+      normalEdge("e_join_writer", "n_join", "n_writer"),
+      normalEdge("e_writer_cond", "n_writer", "n_cond"),
+      branchEdge("e_revise", "n_cond", "n_writer", "revise"),
+      branchEdge("e_pass", "n_cond", "n_end", "pass"),
+    ],
+  };
+}
+
+/**
+ * revise 打回 Fork：第二轮会再进并行区。Join 必须靠屏障 consume 清空 seen 才能再等齐。
+ */
+function reviseBackToForkDoc(): WorkflowDocument {
+  const doc = reviseBackToWriterDoc();
+  return {
+    ...doc,
+    name: "打回 Fork",
+    edges: doc.edges.map((edge) =>
+      edge.id === "e_revise"
+        ? branchEdge("e_revise", "n_cond", "n_fork", "revise")
+        : edge
+    ),
+  };
+}
+
 async function streamedNodeOrder(
   app: CompiledWorkflowApp,
-  input: { messages: unknown[]; vars: Record<string, unknown> }
+  input: { messages: unknown[]; vars: Record<string, unknown> },
+  extra?: { recursionLimit?: number }
 ) {
   const order: string[] = [];
-  const stream = await app.stream(input, { streamMode: "updates" });
+  const stream = await app.stream(input, {
+    streamMode: "updates",
+    ...extra,
+  });
   for await (const chunk of stream) {
     order.push(...Object.keys(chunk as Record<string, unknown>));
   }
@@ -813,9 +942,7 @@ describe("collectStaticControlEdges", () => {
       ])
     );
     expect(
-      wired.some(
-        (edge) => edge.source === "n_aa" && edge.target === "n_join"
-      )
+      wired.some((edge) => edge.source === "n_aa" && edge.target === "n_join")
     ).toBe(false);
   });
 
@@ -867,6 +994,33 @@ describe("collectStaticControlEdges", () => {
       ])
     );
   });
+
+  it("N=4 四条 lane 都逐条 addEdge，屏障名单含四个链尾", () => {
+    const wired = collectStaticControlEdges(parallelNToolDoc(4));
+    expect(wired.filter((edge) => Array.isArray(edge.source))).toEqual([
+      { source: ["n_t1", "n_t2", "n_t3", "n_t4"], target: "n_join" },
+    ]);
+    expect(wired).toEqual(
+      expect.arrayContaining([
+        { source: "n_fork", target: "n_t1" },
+        { source: "n_fork", target: "n_t2" },
+        { source: "n_fork", target: "n_t3" },
+        { source: "n_fork", target: "n_t4" },
+      ])
+    );
+  });
+
+  it("主笔的 Join 入边仍是普通边，不能编成屏障", () => {
+    const wired = collectStaticControlEdges(reviseBackToWriterDoc());
+    expect(
+      wired.some(
+        (edge) => Array.isArray(edge.source) && edge.target === "n_writer"
+      )
+    ).toBe(false);
+    expect(wired).toEqual(
+      expect.arrayContaining([{ source: "n_join", target: "n_writer" }])
+    );
+  });
 });
 
 describe("compileWorkflow fork/join", () => {
@@ -875,18 +1029,60 @@ describe("compileWorkflow fork/join", () => {
     tools: new Map([[TOOL_UUID, echoTool()]]),
   };
 
-  it("N=2 并行跑完后两路 outputKey 都进 vars", async () => {
+  it("N=2 并行跑完后两路 outputKey 都进 vars，且 Join 排在两路之后", async () => {
     const compiled = await compileWorkflow(equalParallelToolDoc(), {
       resources,
     });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const input = { messages: [], vars: { city: "杭州" } };
+    const out = await compiled.app.invoke(input);
+    expect(out.vars.out_aa).toBeDefined();
+    expect(out.vars.out_zz).toBeDefined();
+    const order = await streamedNodeOrder(compiled.app, input);
+    expect(order.indexOf("n_join")).toBeGreaterThan(order.indexOf("n_aa"));
+    expect(order.indexOf("n_join")).toBeGreaterThan(order.indexOf("n_zz"));
+  });
+
+  it("N=4 四条 lane 的 outputKey 都进 vars", async () => {
+    const compiled = await compileWorkflow(parallelNToolDoc(4), { resources });
     expect(compiled.ok).toBe(true);
     if (!compiled.ok) return;
     const out = await compiled.app.invoke({
       messages: [],
       vars: { city: "杭州" },
     });
-    expect(out.vars.out_aa).toBeDefined();
-    expect(out.vars.out_zz).toBeDefined();
+    expect(out.vars.out_1).toBeDefined();
+    expect(out.vars.out_2).toBeDefined();
+    expect(out.vars.out_3).toBeDefined();
+    expect(out.vars.out_4).toBeDefined();
+  });
+
+  it("边界：N=4 缺一条 lane 出边时 compile 失败", async () => {
+    const doc = parallelNToolDoc(4);
+    doc.edges = doc.edges.filter((edge) => edge.id !== "e_lane_3");
+    const compiled = await compileWorkflow(doc, { resources });
+    expect(compiled.ok).toBe(false);
+    if (compiled.ok) return;
+    expect(
+      compiled.errors.some((issue) => issue.message.includes("lane_3"))
+    ).toBe(true);
+  });
+
+  it("两段并行运行时各 Join 只跑一次，JoinA 早于第二段 Fork", async () => {
+    const compiled = await compileWorkflow(twoRegionDoc(), { resources });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const order = await streamedNodeOrder(compiled.app, {
+      messages: [],
+      vars: { city: "杭州" },
+    });
+    expect(order.filter((id) => id === "n_join_a")).toHaveLength(1);
+    expect(order.filter((id) => id === "n_join_b")).toHaveLength(1);
+    expect(order.indexOf("n_join_a")).toBeLessThan(order.indexOf("n_fork_b"));
+    expect(order.indexOf("n_join_a")).toBeLessThan(order.indexOf("n_b1"));
+    expect(order.indexOf("n_join_b")).toBeGreaterThan(order.indexOf("n_b1"));
+    expect(order.indexOf("n_join_b")).toBeGreaterThan(order.indexOf("n_b2"));
   });
 
   it("边界：不等长 lane 时 Join 只执行一次，且排在长 lane 链尾之后", async () => {
@@ -950,7 +1146,9 @@ function agentWithOutput(id: string, outputKey: string) {
 }
 
 function parallelAgentDoc(afterJoin?: boolean): WorkflowDocument {
-  const after = afterJoin ? [agentWithOutput("n_writer", DEFAULT_AGENT_OUTPUT_KEY)] : [];
+  const after = afterJoin
+    ? [agentWithOutput("n_writer", DEFAULT_AGENT_OUTPUT_KEY)]
+    : [];
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
     name: "并行智能体",
@@ -1067,5 +1265,63 @@ describe("regionInteriorNodeIds / messagesMode", () => {
     const out = await compiled.app.invoke({ messages: [], vars: {} });
     expect(out.messages).toEqual([]);
     expect(out.lastAgentText).toBe("");
+  });
+});
+
+describe("compileWorkflow 环与屏障重置", () => {
+  const toolResources = {
+    agents: new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]),
+    tools: new Map([[TOOL_UUID, echoTool()]]),
+  };
+
+  it("Join 之后打回主笔时主笔第一轮就执行，且能跑满两轮", async () => {
+    const compiled = await compileWorkflow(reviseBackToWriterDoc(), {
+      resources: toolResources,
+      createModel: scriptedCreateModel(["revise", "pass"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const order = await streamedNodeOrder(
+      compiled.app,
+      { messages: [], vars: { city: "杭州" } },
+      { recursionLimit: 50 }
+    );
+    const writerHits = order.filter((id) => id === "n_writer");
+    expect(writerHits).toHaveLength(2);
+    expect(order.indexOf("n_writer")).toBeLessThan(order.indexOf("n_cond"));
+    expect(order.indexOf("n_join")).toBeLessThan(order.indexOf("n_writer"));
+    expect(order.filter((id) => id === "n_join")).toHaveLength(1);
+  });
+
+  it("边界：revise 打回 Fork 时 Join 跑两次，说明屏障 consume 后能再等齐", async () => {
+    const compiled = await compileWorkflow(reviseBackToForkDoc(), {
+      resources: toolResources,
+      createModel: scriptedCreateModel(["revise", "pass"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const order = await streamedNodeOrder(
+      compiled.app,
+      { messages: [], vars: { city: "杭州" } },
+      { recursionLimit: 50 }
+    );
+    expect(order.filter((id) => id === "n_join")).toHaveLength(2);
+    expect(order.filter((id) => id === "n_writer")).toHaveLength(2);
+    expect(order.filter((id) => id === "n_fork")).toHaveLength(2);
+  });
+
+  it("边界：空 messages 的旧串行条件图仍能 compile 并按 vars 路由", async () => {
+    const compiled = await compileWorkflow(expressionDoc(), {
+      resources: { agents: new Map(), tools: new Map() },
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const yes = await compiled.app.invoke({
+      messages: [],
+      vars: { need_human: true },
+    });
+    expect(yes._route).toBe("yes");
   });
 });
