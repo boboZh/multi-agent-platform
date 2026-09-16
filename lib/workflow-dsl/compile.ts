@@ -34,10 +34,9 @@ import {
 } from "@/lib/workflow-dsl/schema";
 import {
   buildBranchPathMap,
+  collectStaticControlEdges,
   endNodeIds,
   evaluateExpressionRoute,
-  graphSourceId,
-  graphTargetId,
   lastAiText,
   messageContentToText,
   pickBranchKey,
@@ -47,7 +46,9 @@ import {
 
 export type { WorkflowGraphState } from "@/lib/workflow-dsl/compile-utils";
 export {
+  collectStaticControlEdges,
   evaluateExpressionRoute,
+  joinBarrierChannelName,
   pickBranchKey,
   resolveInputMap,
   resolveStatePath,
@@ -418,7 +419,8 @@ async function executeConditionNode(
  *
  * 入参：画布文档；可选 checkpointer / 预加载的 agents·tools（单测注入，避免打库）。
  * 出参：`ok` 时带 compiled app；失败带回 schema/引用错误，不抛半成品图。
- * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点 → 普通边 addEdge、条件边 addConditionalEdges → compile。
+ * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点（Fork/Join 恒等）→
+ * lane/普通边 addEdge、Join 数组屏障、条件边 addConditionalEdges → compile。
  */
 export async function compileWorkflow(
   input: unknown,
@@ -459,7 +461,7 @@ export async function compileWorkflow(
         state: typeof WorkflowGraphAnnotation.State
       ) => Promise<Partial<WorkflowGraphState>>
     ) => void;
-    addEdge: (source: string, target: string) => void;
+    addEdge: (source: string | string[], target: string) => void;
     addConditionalEdges: (
       source: string,
       path: (state: typeof WorkflowGraphAnnotation.State) => string,
@@ -472,37 +474,34 @@ export async function compileWorkflow(
   const builder = graph as unknown as GraphBuilder;
 
   for (const node of doc.nodes) {
-    const { kind } = node.data;
-    if (kind === "start" || kind === "end") continue;
+    const { data } = node;
+    if (data.kind === "start" || data.kind === "end") continue;
 
     builder.addNode(node.id, async (rawState) => {
       const state = asGraphState(rawState);
-      switch (node.data.kind) {
+      switch (data.kind) {
         case "tool":
-          return executeToolNode(state, node.data.config, resources);
+          return executeToolNode(state, data.config, resources);
         case "agent":
-          return executeAgentNode(
-            state,
-            node.data.config,
-            resources,
-            createModel
-          );
+          return executeAgentNode(state, data.config, resources, createModel);
         case "human_review":
-          return executeHumanReviewNode(state, node.data.config, node.id);
+          return executeHumanReviewNode(state, data.config, node.id);
         case "condition":
-          return executeConditionNode(state, node.data.config, createModel);
-        default:
+          return executeConditionNode(state, data.config, createModel);
+        case "fork":
+        case "join":
+          // 恒等：控制流只靠边。Join 的 AND 汇合来自数组 addEdge 的 NamedBarrierValue，节点本身不能写业务。
           return {};
+        default: {
+          const _exhaustive: never = data;
+          return _exhaustive;
+        }
       }
     });
   }
 
-  for (const edge of doc.edges) {
-    if (edge.data.kind !== "normal") continue;
-    builder.addEdge(
-      graphSourceId(edge.source, doc.startNodeId),
-      graphTargetId(edge.target, ends)
-    );
+  for (const edge of collectStaticControlEdges(doc)) {
+    builder.addEdge(edge.source, edge.target);
   }
 
   for (const node of doc.nodes) {

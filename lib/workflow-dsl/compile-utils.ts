@@ -1,6 +1,7 @@
 import { Parser } from "expr-eval";
 import { END, START } from "@langchain/langgraph";
 import type { BaseMessage } from "@langchain/core/messages";
+import { analyzeForkJoinRegions } from "@/lib/workflow-dsl/fork-join-regions";
 import type { WorkflowDocument, WorkflowEdge } from "@/lib/workflow-dsl/schema";
 
 /**
@@ -240,4 +241,67 @@ export function endNodeIds(doc: WorkflowDocument): Set<string> {
   return new Set(
     doc.nodes.filter((node) => node.data.kind === "end").map((node) => node.id)
   );
+}
+
+export type StaticControlEdge = {
+  /** 字符串 = 普通边；数组 = Join 的 NamedBarrierValue 前驱名单。 */
+  source: string | string[];
+  target: string;
+};
+
+/**
+ * LangGraph 屏障通道名：`join:${start.join("+")}:${end}`。
+ * 必须先按节点 id 排序再拼接，否则同一 DSL 两次编译通道名会变，resume 对不上 checkpoint。
+ */
+export function joinBarrierChannelName(
+  predecessors: readonly string[],
+  joinId: string
+): string {
+  return `join:${[...predecessors].sort().join("+")}:${joinId}`;
+}
+
+/**
+ * 把 DSL 边编译成 StateGraph.addEdge 调用（不含 condition 的 addConditionalEdges）。
+ *
+ * 入参：已过 compile 档的文档。出参：按遍历顺序的普通边 + 按 joinId 排序后的屏障边。
+ * 步骤：branch 边跳过；lane / 非 Join 目标的 normal 逐条连；目标为 Join 的边不连，
+ * 改用 analyzeForkJoinRegions.predecessors 一次性 addEdge(sorted, joinId)。
+ *
+ * 屏障名单必须和校验共用区域分析，避免「graph 过了但少等一路」。
+ * 非 Join 的多入边故意不走数组形式，环和人审驳回仍是 OR。
+ */
+export function collectStaticControlEdges(
+  doc: WorkflowDocument
+): StaticControlEdge[] {
+  const ends = endNodeIds(doc);
+  const joinIds = new Set(
+    doc.nodes.filter((node) => node.data.kind === "join").map((node) => node.id)
+  );
+  const { regions } = analyzeForkJoinRegions(doc);
+  const predecessorsByJoin = new Map(
+    regions.map((region) => [region.joinId, [...region.predecessors].sort()])
+  );
+
+  const wired: StaticControlEdge[] = [];
+  for (const edge of doc.edges) {
+    if (edge.data.kind === "branch") continue;
+    const source = graphSourceId(edge.source, doc.startNodeId);
+    const target = graphTargetId(edge.target, ends);
+    if (typeof target === "string" && joinIds.has(target)) {
+      if (source === START) {
+        throw new Error("Start 不能直连 Join");
+      }
+      continue;
+    }
+    wired.push({ source, target });
+  }
+
+  for (const joinId of [...predecessorsByJoin.keys()].sort()) {
+    wired.push({
+      source: predecessorsByJoin.get(joinId)!,
+      target: joinId,
+    });
+  }
+
+  return wired;
 }

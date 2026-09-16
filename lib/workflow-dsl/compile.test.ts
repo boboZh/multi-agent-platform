@@ -14,17 +14,19 @@ import {
   parseWorkflowDocument,
   type WorkflowDocument,
 } from "@/lib/workflow-dsl/schema";
-import { compileWorkflow, dryRunCompile } from "@/lib/workflow-dsl/compile";
+import { compileWorkflow, dryRunCompile, type CompiledWorkflowApp } from "@/lib/workflow-dsl/compile";
 import {
   buildBranchPathMap,
+  collectStaticControlEdges,
   evaluateExpressionRoute,
+  joinBarrierChannelName,
   pickBranchKey,
   pickExpressionBranchKey,
   resolveInputMap,
   resolveStatePath,
   type WorkflowGraphState,
 } from "@/lib/workflow-dsl/compile-utils";
-import { END } from "@langchain/langgraph";
+import { END, START } from "@langchain/langgraph";
 
 const AGENT_UUID = "11111111-1111-4111-8111-111111111111";
 const TOOL_UUID = "22222222-2222-4222-8222-222222222222";
@@ -628,5 +630,295 @@ describe("compileWorkflow", () => {
     expect(fail.errors.some((e) => e.message.includes("checkpointer"))).toBe(
       false
     );
+  });
+});
+
+function forkNode(id: string, laneCount: number) {
+  const data = createNodeData("fork");
+  if (data.kind !== "fork") throw new Error("unreachable");
+  data.config = {
+    lanes: Array.from({ length: laneCount }, (_, index) => ({
+      key: `lane_${index + 1}`,
+      label: `通道 ${index + 1}`,
+    })),
+  };
+  return { ...node("fork", id), data };
+}
+
+function toolWithOutput(id: string, outputKey: string) {
+  const data = createNodeData("tool");
+  if (data.kind !== "tool") throw new Error("unreachable");
+  data.config = {
+    toolId: TOOL_UUID,
+    outputKey,
+    inputMap: { city: "state.vars.city" },
+  };
+  return { ...node("tool", id), data };
+}
+
+function laneEdge(id: string, source: string, target: string, key: string) {
+  return {
+    id,
+    source,
+    target,
+    sourceHandle: key,
+    data: { kind: "lane" as const, laneKey: key },
+  };
+}
+
+function normalEdge(id: string, source: string, target: string) {
+  return {
+    id,
+    source,
+    target,
+    data: { kind: "normal" as const },
+  };
+}
+
+function echoTool(): ToolRow {
+  return {
+    id: TOOL_UUID,
+    user_id: "00000000-0000-4000-8000-000000000000",
+    name: "echo_tool",
+    display_name: "Echo",
+    description: "echo",
+    tool_type: "explicit",
+    connection_config: {
+      schema: { city: { type: "string", description: "城市" } },
+    },
+  };
+}
+
+/**
+ * Start → Fork(2) → 短 lane 一跳 / 长 lane 两跳 → Join → End。
+ * 用来锁死屏障：若逐条 addEdge，Join 会在短 lane 结束后抢跑。
+ */
+function unevenParallelToolDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "不等长并行",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", 2),
+      toolWithOutput("n_a1", "out_a"),
+      toolWithOutput("n_a2", "out_b1"),
+      toolWithOutput("n_a2b", "out_b2"),
+      node("join", "n_join"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      laneEdge("e_lane_1", "n_fork", "n_a1", "lane_1"),
+      laneEdge("e_lane_2", "n_fork", "n_a2", "lane_2"),
+      normalEdge("e_a1_join", "n_a1", "n_join"),
+      normalEdge("e_a2_extra", "n_a2", "n_a2b"),
+      normalEdge("e_extra_join", "n_a2b", "n_join"),
+      normalEdge("e_join_end", "n_join", "n_end"),
+    ],
+  };
+}
+
+function equalParallelToolDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "等长并行",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", 2),
+      toolWithOutput("n_zz", "out_zz"),
+      toolWithOutput("n_aa", "out_aa"),
+      node("join", "n_join"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      laneEdge("e_lane_2", "n_fork", "n_zz", "lane_2"),
+      laneEdge("e_lane_1", "n_fork", "n_aa", "lane_1"),
+      normalEdge("e_zz_join", "n_zz", "n_join"),
+      normalEdge("e_aa_join", "n_aa", "n_join"),
+      normalEdge("e_join_end", "n_join", "n_end"),
+    ],
+  };
+}
+
+function twoRegionDoc(): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "两段并行",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork_a", 2),
+      toolWithOutput("n_a1", "out_a1"),
+      toolWithOutput("n_a2", "out_a2"),
+      node("join", "n_join_a"),
+      forkNode("n_fork_b", 2),
+      toolWithOutput("n_b1", "out_b1"),
+      toolWithOutput("n_b2", "out_b2"),
+      node("join", "n_join_b"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork_a"),
+      laneEdge("e_a_lane_1", "n_fork_a", "n_a1", "lane_1"),
+      laneEdge("e_a_lane_2", "n_fork_a", "n_a2", "lane_2"),
+      normalEdge("e_a1_join", "n_a1", "n_join_a"),
+      normalEdge("e_a2_join", "n_a2", "n_join_a"),
+      normalEdge("e_serial", "n_join_a", "n_fork_b"),
+      laneEdge("e_b_lane_1", "n_fork_b", "n_b1", "lane_1"),
+      laneEdge("e_b_lane_2", "n_fork_b", "n_b2", "lane_2"),
+      normalEdge("e_b1_join", "n_b1", "n_join_b"),
+      normalEdge("e_b2_join", "n_b2", "n_join_b"),
+      normalEdge("e_end", "n_join_b", "n_end"),
+    ],
+  };
+}
+
+async function streamedNodeOrder(
+  app: CompiledWorkflowApp,
+  input: { messages: unknown[]; vars: Record<string, unknown> }
+) {
+  const order: string[] = [];
+  const stream = await app.stream(input, { streamMode: "updates" });
+  for await (const chunk of stream) {
+    order.push(...Object.keys(chunk as Record<string, unknown>));
+  }
+  return order;
+}
+
+describe("collectStaticControlEdges", () => {
+  it("lane 边逐条连，Join 走排序后的数组屏障，通道名与边序无关", () => {
+    const doc = equalParallelToolDoc();
+    const reversed: WorkflowDocument = {
+      ...doc,
+      edges: [...doc.edges].reverse(),
+    };
+    const wired = collectStaticControlEdges(doc);
+    const wiredReversed = collectStaticControlEdges(reversed);
+    const barriers = wired.filter((edge) => Array.isArray(edge.source));
+    expect(barriers).toEqual([{ source: ["n_aa", "n_zz"], target: "n_join" }]);
+    expect(wiredReversed.filter((edge) => Array.isArray(edge.source))).toEqual(
+      barriers
+    );
+    expect(joinBarrierChannelName(["n_zz", "n_aa"], "n_join")).toBe(
+      "join:n_aa+n_zz:n_join"
+    );
+    expect(wired).toEqual(
+      expect.arrayContaining([
+        { source: "n_fork", target: "n_aa" },
+        { source: "n_fork", target: "n_zz" },
+      ])
+    );
+    expect(
+      wired.some(
+        (edge) => edge.source === "n_aa" && edge.target === "n_join"
+      )
+    ).toBe(false);
+  });
+
+  it("边界：不等长通道的屏障名单是链尾，不是入口", () => {
+    const wired = collectStaticControlEdges(unevenParallelToolDoc());
+    expect(wired.filter((edge) => Array.isArray(edge.source))).toEqual([
+      { source: ["n_a1", "n_a2b"], target: "n_join" },
+    ]);
+  });
+
+  it("边界：Start 直连 Join 时抛错，避免 LangGraph 把 START 塞进数组 addEdge", () => {
+    const doc: WorkflowDocument = {
+      schemaVersion: WORKFLOW_SCHEMA_VERSION,
+      name: "非法",
+      startNodeId: "n_start",
+      nodes: [
+        node("start", "n_start"),
+        node("join", "n_join"),
+        node("end", "n_end"),
+      ],
+      edges: [
+        normalEdge("e1", "n_start", "n_join"),
+        normalEdge("e2", "n_join", "n_end"),
+      ],
+    };
+    expect(() => collectStaticControlEdges(doc)).toThrow("Start 不能直连 Join");
+  });
+
+  it("边界：同一前驱两条入 Join 的边只进屏障一次", () => {
+    const doc = equalParallelToolDoc();
+    doc.edges.push(normalEdge("e_dup", "n_aa", "n_join"));
+    const barriers = collectStaticControlEdges(doc).filter((edge) =>
+      Array.isArray(edge.source)
+    );
+    expect(barriers).toEqual([{ source: ["n_aa", "n_zz"], target: "n_join" }]);
+  });
+
+  it("两段并行各自一块屏障，JoinA 出边仍是普通边", () => {
+    const wired = collectStaticControlEdges(twoRegionDoc());
+    expect(wired.filter((edge) => Array.isArray(edge.source))).toEqual([
+      { source: ["n_a1", "n_a2"], target: "n_join_a" },
+      { source: ["n_b1", "n_b2"], target: "n_join_b" },
+    ]);
+    expect(wired).toEqual(
+      expect.arrayContaining([
+        { source: "n_join_a", target: "n_fork_b" },
+        { source: START, target: "n_fork_a" },
+        { source: "n_join_b", target: END },
+      ])
+    );
+  });
+});
+
+describe("compileWorkflow fork/join", () => {
+  const resources = {
+    agents: new Map(),
+    tools: new Map([[TOOL_UUID, echoTool()]]),
+  };
+
+  it("N=2 并行跑完后两路 outputKey 都进 vars", async () => {
+    const compiled = await compileWorkflow(equalParallelToolDoc(), {
+      resources,
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const out = await compiled.app.invoke({
+      messages: [],
+      vars: { city: "杭州" },
+    });
+    expect(out.vars.out_aa).toBeDefined();
+    expect(out.vars.out_zz).toBeDefined();
+  });
+
+  it("边界：不等长 lane 时 Join 只执行一次，且排在长 lane 链尾之后", async () => {
+    const compiled = await compileWorkflow(unevenParallelToolDoc(), {
+      resources,
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const order = await streamedNodeOrder(compiled.app, {
+      messages: [],
+      vars: { city: "杭州" },
+    });
+    const joinHits = order.filter((id) => id === "n_join");
+    expect(joinHits).toHaveLength(1);
+    expect(order.indexOf("n_join")).toBeGreaterThan(order.indexOf("n_a2b"));
+    expect(order.indexOf("n_a1")).toBeGreaterThan(-1);
+    expect(order.indexOf("n_a2")).toBeGreaterThan(-1);
+    expect(order.indexOf("n_a2")).toBeLessThan(order.indexOf("n_a2b"));
+  });
+
+  it("同一 DSL 两次编译得到同名屏障通道，resume 才对得上 checkpoint", async () => {
+    const doc = equalParallelToolDoc();
+    const first = await compileWorkflow(doc, { resources });
+    const second = await compileWorkflow(
+      { ...doc, edges: [...doc.edges].reverse() },
+      { resources }
+    );
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    const name = joinBarrierChannelName(["n_zz", "n_aa"], "n_join");
+    const channelsOf = (app: { channels?: Record<string, unknown> }) =>
+      Object.keys(app.channels ?? {});
+    expect(channelsOf(first.app)).toContain(name);
+    expect(channelsOf(second.app)).toContain(name);
   });
 });

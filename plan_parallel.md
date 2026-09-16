@@ -17,9 +17,11 @@
 1. 拖一个 **Fork**，像 Condition 增删分支一样 **增删 lane**（默认 2 条）。
 2. 从每个 lane 端口拉线，接到 Agent / Tool，或一条串行链的第一个节点。
 3. 各条链最终连到同一个 Join；Join 之后接任意现有节点（Agent、Condition、人审、下一个 Fork、End）。
-   - 「Join 之后接下一个 Fork」是 **串联**，不是嵌套：第二个 Fork 落在第一个 Join **之后**，两个区域首尾相接、互不重叠。
-   - **嵌套** 指第二个 Fork 落在某条 lane **内部**（夹在 ForkA 与 JoinA 之间），本期禁止，见 §7.2 第 3 条。
-   - 判断标准：沿任一 lane 从 Fork 走到它配对的 Join，路上再遇到 Fork 就是嵌套。
+
+- 「Join 之后接下一个 Fork」是 **串联**，不是嵌套：第二个 Fork 落在第一个 Join **之后**，两个区域首尾相接、互不重叠。
+- **嵌套** 指第二个 Fork 落在某条 lane **内部**（夹在 ForkA 与 JoinA 之间），本期禁止，见 §7.2 第 3 条。
+- 判断标准：沿任一 lane 从 Fork 走到它配对的 Join，路上再遇到 Fork 就是嵌套。
+
 4. 运行时：Fork 之后 N 路并行；**Join 在 N 路全部** `node_end` **之前不得执行，且只执行一次**（含各 lane 长度不等的情况）。
 5. 并行路各写不同 `vars[outputKey]`；Join 之后用现有 `inputMap` 读任意子集。
 6. 旧图（无 fork/join）行为不变。
@@ -28,15 +30,15 @@
 
 可拼出的模式（都不需要新 kind）：
 
-| 模式                       | 拼法                                                           |
-| -------------------------- | -------------------------------------------------------------- |
-| 两路同时检索再汇总         | Fork(2) → 两 Agent → Join → Agent                              |
-| N 路专家调研 + 主笔        | Fork(N) → … → Join → Agent                                     |
+| 模式                       | 拼法                                                             |
+| -------------------------- | ---------------------------------------------------------------- |
+| 两路同时检索再汇总         | Fork(2) → 两 Agent → Join → Agent                                |
+| N 路专家调研 + 主笔        | Fork(N) → … → Join → Agent                                       |
 | 串行中插两段并行           | `Fork(3)…Join → Agent → Fork(2)…Join`（段内 N 路并行，段间串行） |
-| 并行后互斥路由             | Join → Condition → 不同后续                                    |
-| 并行后打回重做（环在区外） | Join → Condition → 区外某串行节点                              |
-| 并行后人审会签             | Join → human_review → Condition → …                            |
-| 交叉质检                   | Join 后主笔 → 再 Fork，各 lane 的 `inputMap` 只注入需要的 vars |
+| 并行后互斥路由             | Join → Condition → 不同后续                                      |
+| 并行后打回重做（环在区外） | Join → Condition → 区外某串行节点                                |
+| 并行后人审会签             | Join → human_review → Condition → …                              |
+| 交叉质检                   | Join 后主笔 → 再 Fork，各 lane 的 `inputMap` 只注入需要的 vars   |
 
 表格里 `Fork(N)…Join` 是**整个并行区的缩写**，把 lane 折叠掉了。「串行中插两段并行」展开后是：
 
@@ -63,14 +65,14 @@ ForkA ─┬→ ForkB ─┬→ b1 ─┐
 
 ## 1. 现状缺口
 
-| 层     | 现状                                                                          | 缺什么                                          |
-| ------ | ----------------------------------------------------------------------------- | ----------------------------------------------- |
-| 运行时 | `compile.ts` 逐条边 `addEdge`。多条普通出边 = 下游并行。                      | **正确的 fan-in**（见 §2）、恒等 Fork/Join。    |
-| 画布   | `connect()` 按 `(source, handle)` 只留一条出边；非 Condition 只有匿名单出口。 | Fork 多个 named 出口；Join 多入边不被清掉。     |
-| 端口   | `NODE_PORT_SPEC` 里 `targets: 0 \| 1`、`sources: 0 \| 1 \| "branches"`。      | `sources: "lanes"`、Join 的 `targets: "many"`。 |
-| 节点   | Condition = XOR。                                                             | AND 扇出 / 汇合。                               |
-| State  | `vars` 浅合并；`lastAgentText` 覆盖；`messages` 追加。                        | 写冲突校验；并行 Agent 的写回策略（见 §8.1）。  |
-| 监控   | runner 用**单个** `currentNodeId` 归属 token/tool/error。                     | 按事件 metadata 归属节点（见 §9）。             |
+| 层     | 现状                                                                          | 缺什么                                         |
+| ------ | ----------------------------------------------------------------------------- | ---------------------------------------------- | --- | ------------- | ----------------------------------------------- |
+| 运行时 | `compile.ts` 逐条边 `addEdge`。多条普通出边 = 下游并行。                      | **正确的 fan-in**（见 §2）、恒等 Fork/Join。   |
+| 画布   | `connect()` 按 `(source, handle)` 只留一条出边；非 Condition 只有匿名单出口。 | Fork 多个 named 出口；Join 多入边不被清掉。    |
+| 端口   | `NODE_PORT_SPEC` 里 `targets: 0                                               | 1`、`sources: 0                                | 1   | "branches"`。 | `sources: "lanes"`、Join 的 `targets: "many"`。 |
+| 节点   | Condition = XOR。                                                             | AND 扇出 / 汇合。                              |
+| State  | `vars` 浅合并；`lastAgentText` 覆盖；`messages` 追加。                        | 写冲突校验；并行 Agent 的写回策略（见 §8.1）。 |
+| 监控   | runner 用**单个** `currentNodeId` 归属 token/tool/error。                     | 按事件 metadata 归属节点（见 §9）。            |
 
 关于端口表里的 `0`：它是**端口数量**，不是「第 0 号端口」。`start: { targets: 0 }` 表示顶部不渲染输入点，`end: { sources: 0 }` 表示底部不渲染输出点。
 
@@ -100,15 +102,15 @@ ForkA ─┬→ ForkB ─┬→ b1 ─┐
 
 `CompiledStateGraph.attachEdge`（`node_modules/@langchain/langgraph/dist/graph/state.js`）按 `start` 是字符串还是数组，走完全不同的分支：
 
-| 调用形式 | 通道 | 类型 | 语义 |
-| --- | --- | --- | --- |
-| `addEdge("a", "c")`（现状） | `branch:to:c`，**所有上游共写同一个** | `LastValue` | **OR**：任一上游写入即 bump 版本，c 被触发 |
-| `addEdge(["a","b"], "c")` | `join:a+b:c` | `NamedBarrierValue` | **AND**：等 `names` 全部报到才放行 |
+| 调用形式                    | 通道                                  | 类型                | 语义                                       |
+| --------------------------- | ------------------------------------- | ------------------- | ------------------------------------------ |
+| `addEdge("a", "c")`（现状） | `branch:to:c`，**所有上游共写同一个** | `LastValue`         | **OR**：任一上游写入即 bump 版本，c 被触发 |
+| `addEdge(["a","b"], "c")`   | `join:a+b:c`                          | `NamedBarrierValue` | **AND**：等 `names` 全部报到才放行         |
 
 `NamedBarrierValue` 内部两个集合：
 
-- **`names`**：要等的节点名单，**编译期固定**（就是数组里那几个）。
-- **`seen`**：目前已经报到过的节点，**运行期累积**，并随 checkpoint 持久化（`checkpoint()` 返回 `[...seen]`）。
+- `names`：要等的节点名单，**编译期固定**（就是数组里那几个）。
+- `seen`：目前已经报到过的节点，**运行期累积**，并随 checkpoint 持久化（`checkpoint()` 返回 `[...seen]`）。
 
 放行条件就是 `seen` 等于 `names`，否则 `get()` 抛 `EmptyChannelError`。抛错为什么等于「不放行」——因为引擎挑下一轮任务时会读每个 trigger，**读不出来的直接从 trigger 列表里过滤掉**（`dist/pregel/algo.js` 的 `_prepareSingleTask`）：过滤后 `triggers.length === 0` 就不给这个节点建任务。等最后一个上游写进 `seen`，它才被调度**一次**。
 
@@ -131,7 +133,7 @@ ForkA ─┬→ ForkB ─┬→ b1 ─┐
 
 ### 2.3 由此得出的三条硬约束
 
-**约束 1：Join 的编译必须一次性 `addEdge(predecessors, joinId)`**，`predecessors` = 该 Join 的全部直接前驱节点。
+**约束 1：Join 的编译必须一次性** `addEdge(predecessors, joinId)`，`predecessors` = 该 Join 的全部直接前驱节点。
 
 现状是逐条连（`lib/workflow-dsl/compile.ts`）：
 
@@ -149,7 +151,7 @@ for (const edge of doc.edges) {
 
 ```ts
 const joinIds = new Set(
-  doc.nodes.filter((n) => n.data.kind === "join").map((n) => n.id),
+  doc.nodes.filter((n) => n.data.kind === "join").map((n) => n.id)
 );
 
 // 目标是 Join 的边不逐条连，先按 Join 收集直接前驱
@@ -203,7 +205,7 @@ JoinA ────────────────→ 主笔 → ForkB…Joi
 
 **结论：并行汇合要 AND，环与分支回流要 OR，两者不能用同一套连边方式。** 这也是「必须有显式 Join 节点」而不能靠「N 路都连到下一个业务节点」的根本原因——那个业务节点身上没法既当屏障又当环的入口。
 
-**约束 3：`predecessors` 数组必须按节点 id 排序。** 通道名是 `join:${start.join("+")}:${end}`，而每次 run / resume / retry 都会重新编译发布快照（`runner.ts` 的 `compilePublished`）。若数组顺序随 `doc.edges` 遍历顺序变化，resume 时算出的通道名与 checkpoint 里存的不一致，屏障状态会变成孤儿，导致卡死或重复触发。排序 + 单测锁死。
+**约束 3：**`predecessors` **数组必须按节点 id 排序。** 通道名是 `join:${start.join("+")}:${end}`，而每次 run / resume / retry 都会重新编译发布快照（`runner.ts` 的 `compilePublished`）。若数组顺序随 `doc.edges` 遍历顺序变化，resume 时算出的通道名与 checkpoint 里存的不一致，屏障状态会变成孤儿，导致卡死或重复触发。排序 + 单测锁死。
 
 ### 2.4 屏障用完会自动重置（多轮循环无需额外处理）
 
@@ -234,7 +236,7 @@ JoinA ────────────────→ 主笔 → ForkB…Joi
 2. **Join 是显式汇合点，且是唯一允许挂屏障的节点。** 「屏障」指 §2.1 那个 `NamedBarrierValue` 通道实例（名字形如 `join:n_a+n_b+n_c:n_join`）；「只挂在 Join 上」= 只有 Join 的入边会被编译成数组形式的 `addEdge`，其余节点的多入边一律逐条连（OR）。
 3. **Lane 数是 Fork 的配置，不是平台常量。** schema 只约束 `2 ≤ lanes.length ≤ 16`、key 合法且不重复，不预置业务 key。
 4. **一张图可有多个 Fork–Join 对，可前后串联，第一期不嵌套**（区别见 §0 第 3 条）。
-5. **并行结果只认** `vars`**。** 同一 superstep 内多个节点对 `lastAgentText` / `messages` 的写入顺序**是确定的**（引擎按任务路径 `[PULL, 节点名]` 排序应用写入，见 `dist/pregel/algo.js` 的 `_applyWrites`），但**取决于节点 id 的字典序**——把 `n_agent_market` 改名成 `n_agent_zzz`，下游输入就变了。这种「确定但任意」比不确定更危险：测试会稳定通过，问题不在开发期暴露。因此 **region 内节点不得写 `lastAgentText` 与 `messages`**，下游只允许通过 `inputMap` 读 `vars`（见 §8.1）。
+5. **并行结果只认** `vars`**。** 同一 superstep 内多个节点对 `lastAgentText` / `messages` 的写入顺序**是确定的**（引擎按任务路径 `[PULL, 节点名]` 排序应用写入，见 `dist/pregel/algo.js` 的 `_applyWrites`），但**取决于节点 id 的字典序**——把 `n_agent_market` 改名成 `n_agent_zzz`，下游输入就变了。这种「确定但任意」比不确定更危险：测试会稳定通过，问题不在开发期暴露。因此 **region 内节点不得写** `lastAgentText` **与** `messages`，下游只允许通过 `inputMap` 读 `vars`（见 §8.1）。
 6. **并行区内禁止 HITL 与 Condition。** 前者因单 interrupt 契约；后者因 XOR 会让屏障永远等不到某条入边。两者都放在 Join 之后。
 7. `schemaVersion` **仍为 1**，只追加 kind，旧文档无需迁移。
 8. **Join 第一期只有** `wait: "all"`**。**
@@ -428,12 +430,12 @@ N 路并行同时 append，`messages` 会变成按节点名序拼接的多路交
 - `"inherit"`：喂 `state.messages`，写回 `newMessages` 与 `lastAgentText`，并写 `vars[outputKey]`。旧串行图走这条。
 - `"isolated"`：不读共享对话；只吃 `inputMap` 展开后的 HumanMessage + system；**不写回** `messages`，**也不写** `lastAgentText`，只写 `vars[outputKey]`（若确实需要留痕，就只写一条压缩后的摘要 AIMessage，实现时二选一并在注释里说明理由）。
 
-**第一期不把 `messagesMode` 做成 DSL 字段，也不做 Inspector 选项。** 编译期用区域分析结果决定，用户不能覆盖：
+**第一期不把** `messagesMode` **做成 DSL 字段，也不做 Inspector 选项。** 编译期用区域分析结果决定，用户不能覆盖：
 
-| 位置 | 模式 | 理由 |
-| --- | --- | --- |
-| Fork–Join **区域内** | 强制 `isolated` | N 路工人只拿任务包（`inputMap` / `vars`），不挂共享线程 |
-| **区外**（含 Join 之后） | 强制 `inherit` | 与旧图一致；用 `inputMap` 读并行产物 |
+| 位置                     | 模式            | 理由                                                    |
+| ------------------------ | --------------- | ------------------------------------------------------- |
+| Fork–Join **区域内**     | 强制 `isolated` | N 路工人只拿任务包（`inputMap` / `vars`），不挂共享线程 |
+| **区外**（含 Join 之后） | 强制 `inherit`  | 与旧图一致；用 `inputMap` 读并行产物                    |
 
 区外默认要历史，如果以后有这个需求：「某个串行 Agent 不要历史」，再加用户选项；第一期不做。区内也不提供改回 `inherit` 的口子——那会重新引入交错 `messages` 和字典序 `lastAgentText`。
 
@@ -487,7 +489,7 @@ SSE 协议（`WorkflowSseEvent`）不变，但 **runner 必须改**，不只是�
 | 嵌套 Fork                            | 区域从「一对」变成栈；前后串联已够用。                                               |
 | 子图、Cron、`human_review` 双出口    | 与并行正交，原 PLAN 已延后。                                                         |
 | 改 `schemaVersion` / checkpointer 表 | 追加 kind 即可。                                                                     |
-| 用户可选的 `messagesMode`            | 第一期按拓扑强制：区内 `isolated`、区外 `inherit`。区外「不要历史」以后再加选项。     |
+| 用户可选的 `messagesMode`            | 第一期按拓扑强制：区内 `isolated`、区外 `inherit`。区外「不要历史」以后再加选项。    |
 
 ---
 
@@ -509,7 +511,7 @@ SSE 协议（`WorkflowSseEvent`）不变，但 **runner 必须改**，不只是�
   - N=2 调用序；N=4 四个 key 都进 `vars`。
   - 两段并行串联互不抢 Join。
   - 前驱数组排序稳定（同一 DSL 两次编译得到同名通道）。
-  - **region 内 Agent 不写 `lastAgentText` / `messages`**：并行跑完后这两个字段与并行前一致，只有 `vars` 增加。
+  - **region 内 Agent 不写** `lastAgentText` **/** `messages`：并行跑完后这两个字段与并行前一致，只有 `vars` 增加。
   - **环上多入边仍是 OR**：Join 之后打回主笔的图能跑第二轮（屏障 `consume` 后重置），主笔在第一轮就执行而不是等到 Condition 写入。
   - 旧串行图回归。
 
@@ -597,8 +599,8 @@ Phase E 之前，`round` 上限用 LLM condition 的 prompt 约束；Phase E 之
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | fan-in 语义误用                    | §2 写死：Join 用数组 `addEdge`，屏障只挂 Join，前驱排序。Phase B 的不等长 lane 用例作为回归闸门         |
 | 校验与编译对「屏障名单」算法不一致 | 抽共享纯函数，两边调用同一实现                                                                          |
-| 并行 messages 交错                 | 区内强制 `isolated`（不读不写共享对话），区外 `inherit`；不做 Inspector / DSL 选项。下游只读 `vars` |
-| `lastAgentText` 「确定但任意」      | 顺序按节点 id 字典序，改名即改语义。靠 §7.3 的校验硬拦，而不是靠文档提醒                                |
+| 并行 messages 交错                 | 区内强制 `isolated`（不读不写共享对话），区外 `inherit`；不做 Inspector / DSL 选项。下游只读 `vars`     |
+| `lastAgentText` 「确定但任意」     | 顺序按节点 id 字典序，改名即改语义。靠 §7.3 的校验硬拦，而不是靠文档提醒                                |
 | Join 恒等显得多余                  | 必需。屏障只能挂在它上面，普通节点多入边必须保持 OR                                                     |
 | lane 过多 Handle 重叠 / 并发爆炸   | 上限 16 + `maxConcurrency`                                                                              |
 | `joinId` 与连线状态不同步          | 改为推断优先、显式仅作断言                                                                              |
