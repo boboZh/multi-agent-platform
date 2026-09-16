@@ -305,3 +305,20 @@ export function collectStaticControlEdges(
 
   return wired;
 }
+
+/**
+ * 编译期强制的对话策略，不进 DSL。
+ * inherit = 区外旧行为；isolated = 并行区内，避免 N 路交错 messages / 字典序 lastAgentText。
+ */
+export type AgentMessagesMode = "inherit" | "isolated";
+
+/**
+ * Fork–Join 之间的节点（不含两端）。编译器用它决定 isolated，校验层的 interior 是同一份分析。
+ */
+export function regionInteriorNodeIds(doc: WorkflowDocument): Set<string> {
+  const ids = new Set<string>();
+  for (const region of analyzeForkJoinRegions(doc).regions) {
+    for (const id of region.interiorNodeIds) ids.add(id);
+  }
+  return ids;
+}

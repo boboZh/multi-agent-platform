@@ -22,6 +22,7 @@ import {
   joinBarrierChannelName,
   pickBranchKey,
   pickExpressionBranchKey,
+  regionInteriorNodeIds,
   resolveInputMap,
   resolveStatePath,
   type WorkflowGraphState,
@@ -920,5 +921,151 @@ describe("compileWorkflow fork/join", () => {
       Object.keys(app.channels ?? {});
     expect(channelsOf(first.app)).toContain(name);
     expect(channelsOf(second.app)).toContain(name);
+  });
+
+  it("区内 tool 不把摘要写进 messages，只有 vars 增加", async () => {
+    const compiled = await compileWorkflow(equalParallelToolDoc(), {
+      resources,
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const seed = [new HumanMessage("并行前的对话")];
+    const out = await compiled.app.invoke({
+      messages: seed,
+      vars: { city: "杭州" },
+      lastAgentText: "before-parallel",
+    });
+    expect(out.lastAgentText).toBe("before-parallel");
+    expect(out.messages).toHaveLength(1);
+    expect(out.vars.out_aa).toBeDefined();
+    expect(out.vars.out_zz).toBeDefined();
+  });
+});
+
+function agentWithOutput(id: string, outputKey: string) {
+  const data = createNodeData("agent");
+  if (data.kind !== "agent") throw new Error("unreachable");
+  data.config = { agentId: AGENT_UUID, outputKey };
+  return { ...node("agent", id), data };
+}
+
+function parallelAgentDoc(afterJoin?: boolean): WorkflowDocument {
+  const after = afterJoin ? [agentWithOutput("n_writer", DEFAULT_AGENT_OUTPUT_KEY)] : [];
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "并行智能体",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", 2),
+      agentWithOutput("n_aa", "out_aa"),
+      agentWithOutput("n_zz", "out_zz"),
+      node("join", "n_join"),
+      ...after,
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      laneEdge("e_lane_1", "n_fork", "n_aa", "lane_1"),
+      laneEdge("e_lane_2", "n_fork", "n_zz", "lane_2"),
+      normalEdge("e_aa_join", "n_aa", "n_join"),
+      normalEdge("e_zz_join", "n_zz", "n_join"),
+      ...(afterJoin
+        ? [
+            normalEdge("e_join_writer", "n_join", "n_writer"),
+            normalEdge("e_writer_end", "n_writer", "n_end"),
+          ]
+        : [normalEdge("e_join_end", "n_join", "n_end")]),
+    ],
+  };
+}
+
+describe("regionInteriorNodeIds / messagesMode", () => {
+  it("无 Fork 的串行图 interior 为空，区外 Agent 仍写 lastAgentText 与 messages", async () => {
+    expect(regionInteriorNodeIds(agentThenConditionDoc()).size).toBe(0);
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(agentThenConditionDoc(), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["need_human"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const seed = [new HumanMessage("这个单要不要人工？")];
+    const out = await compiled.app.invoke({ messages: seed, vars: {} });
+    expect(out.lastAgentText).toBe("need_human");
+    expect(out.messages.length).toBeGreaterThan(seed.length);
+  });
+
+  it("并行区内 Agent 不改 lastAgentText / messages，只写各自 vars", async () => {
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(parallelAgentDoc(), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["lane-a", "lane-z"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const seed = [new HumanMessage("共享历史不应被区内改写")];
+    const out = await compiled.app.invoke({
+      messages: seed,
+      vars: {},
+      lastAgentText: "before-parallel",
+    });
+    expect(out.lastAgentText).toBe("before-parallel");
+    expect(out.messages).toEqual(seed);
+    expect(out.vars.out_aa).toBeTruthy();
+    expect(out.vars.out_zz).toBeTruthy();
+  });
+
+  it("边界：Join 之后的 Agent 仍是 inherit，会写 lastAgentText", async () => {
+    expect([...regionInteriorNodeIds(parallelAgentDoc(true))].sort()).toEqual([
+      "n_aa",
+      "n_zz",
+    ]);
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(parallelAgentDoc(true), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["lane-a", "lane-z", "after-join"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const out = await compiled.app.invoke({
+      messages: [new HumanMessage("seed")],
+      vars: {},
+      lastAgentText: "before-parallel",
+    });
+    expect(out.lastAgentText).toBe("after-join");
+    expect(out.vars.lastAgentText).toBe("after-join");
+    expect(out.vars.out_aa).toBeTruthy();
+    expect(out.vars.out_zz).toBeTruthy();
+  });
+
+  it("边界：两段并行的 interior 是并集，Fork/Join 本身不算 interior", () => {
+    const ids = regionInteriorNodeIds(twoRegionDoc());
+    expect([...ids].sort()).toEqual(["n_a1", "n_a2", "n_b1", "n_b2"]);
+    expect(ids.has("n_fork_a")).toBe(false);
+    expect(ids.has("n_join_a")).toBe(false);
+    expect(ids.has("n_fork_b")).toBe(false);
+    expect(ids.has("n_join_b")).toBe(false);
+  });
+
+  it("边界：区内 Agent 没有 inputMap 时仍能跑，且不写回 messages", async () => {
+    const agents = new Map([
+      [AGENT_UUID, { agent: agentRow(), tools: [] as ToolRow[] }],
+    ]);
+    const compiled = await compileWorkflow(parallelAgentDoc(), {
+      resources: { agents, tools: new Map() },
+      createModel: scriptedCreateModel(["x", "y"]),
+    });
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const out = await compiled.app.invoke({ messages: [], vars: {} });
+    expect(out.messages).toEqual([]);
+    expect(out.lastAgentText).toBe("");
   });
 });

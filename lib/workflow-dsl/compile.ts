@@ -40,7 +40,9 @@ import {
   lastAiText,
   messageContentToText,
   pickBranchKey,
+  regionInteriorNodeIds,
   resolveInputMap,
+  type AgentMessagesMode,
   type WorkflowGraphState,
 } from "@/lib/workflow-dsl/compile-utils";
 
@@ -50,9 +52,11 @@ export {
   evaluateExpressionRoute,
   joinBarrierChannelName,
   pickBranchKey,
+  regionInteriorNodeIds,
   resolveInputMap,
   resolveStatePath,
 } from "@/lib/workflow-dsl/compile-utils";
+export type { AgentMessagesMode } from "@/lib/workflow-dsl/compile-utils";
 
 export const WorkflowGraphAnnotation = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -253,12 +257,14 @@ function missingResourceErrors(
 
 /**
  * 单次结构化工具调用：参数只来自 inputMap，不经过模型。
- * 结果写进 vars[outputKey]（若配置了），并追加一条 AI 消息让后续 agent 能在对话里看见。
+ * inherit 才把结果追加进 messages，让后续串行 agent 能在对话里看见；
+ * isolated（并行区内）只写 vars，避免 N 路 tool 摘要按节点 id 交错进共享线程。
  */
 async function executeToolNode(
   state: WorkflowGraphState,
   config: ToolNodeConfig,
-  resources: CompileResources
+  resources: CompileResources,
+  messagesMode: AgentMessagesMode
 ): Promise<Partial<WorkflowGraphState>> {
   console.log("executeToolNode", state);
   if (!config.toolId) {
@@ -280,6 +286,9 @@ async function executeToolNode(
   }
 
   const vars = config.outputKey ? { [config.outputKey]: parsed } : {};
+  if (messagesMode === "isolated") {
+    return { vars };
+  }
   return {
     messages: [
       new AIMessage({
@@ -293,12 +302,18 @@ async function executeToolNode(
 /**
  * Agent 节点：内部跑 createReactAgent（ReAct 留在节点里，不在画布上展开 tool 环）。
  * 不给内部 agent 挂 checkpointer —— 外层工作流图才是 checkpoint 的权威，两套 saver 会把同一 thread 写乱。
+ *
+ * messagesMode 由拓扑决定，不是 DSL 字段：
+ * inherit — 读 state.messages，写回 newMessages 与 lastAgentText，并写 vars[outputKey]（区外旧图）。
+ * isolated — 只吃 inputMap 展开的 HumanMessage + system，不读不写共享对话，只写 vars[outputKey]。
+ * 不写摘要 AIMessage：摘要仍会按节点 id 字典序拼进 messages，和交错对话是同一类「确定但任意」。
  */
 async function executeAgentNode(
   state: WorkflowGraphState,
   config: AgentNodeConfig,
   resources: CompileResources,
-  createModel: typeof createChatModel
+  createModel: typeof createChatModel,
+  messagesMode: AgentMessagesMode
 ): Promise<Partial<WorkflowGraphState>> {
   console.log("executeAgentNode", state);
   if (!config.agentId) throw new Error("智能体节点缺少 agentId");
@@ -328,17 +343,28 @@ async function executeAgentNode(
   const injected = mappedJson
     ? [new HumanMessage(`工作流上下文：\n${mappedJson}`)]
     : [];
+  // isolated 不挂共享线程；createReactAgent 仍需要至少一轮 Human，没有 inputMap 就给一条无业务含义的种子。
+  const inbound =
+    messagesMode === "isolated"
+      ? injected.length > 0
+        ? injected
+        : [new HumanMessage("请根据系统提示完成任务。")]
+      : [...state.messages, ...injected];
   const result = await reactAgent.invoke({
-    messages: [...state.messages, ...injected],
+    messages: inbound,
   });
+  const text = lastAiText(result.messages as BaseMessage[]);
+  const vars = { [config.outputKey]: text };
+  if (messagesMode === "isolated") {
+    return { vars };
+  }
   const newMessages = result.messages.slice(
     state.messages.length
   ) as BaseMessage[];
-  const text = lastAiText(result.messages as BaseMessage[]);
   return {
     messages: newMessages,
     lastAgentText: text,
-    vars: { [config.outputKey]: text },
+    vars,
   };
 }
 
@@ -419,7 +445,7 @@ async function executeConditionNode(
  *
  * 入参：画布文档；可选 checkpointer / 预加载的 agents·tools（单测注入，避免打库）。
  * 出参：`ok` 时带 compiled app；失败带回 schema/引用错误，不抛半成品图。
- * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点（Fork/Join 恒等）→
+ * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点（Fork/Join 恒等，区内 Agent isolated）→
  * lane/普通边 addEdge、Join 数组屏障、条件边 addConditionalEdges → compile。
  */
 export async function compileWorkflow(
@@ -452,6 +478,7 @@ export async function compileWorkflow(
 
   const createModel = options.createModel ?? createChatModel;
   const ends = endNodeIds(doc);
+  const isolatedNodeIds = regionInteriorNodeIds(doc);
   const graph = new StateGraph(WorkflowGraphAnnotation);
   // 节点 id 来自用户 DSL，TS 无法在循环里把 StateGraph 的 N 联合类型扩宽，边只能走宽松 builder。
   type GraphBuilder = {
@@ -479,11 +506,20 @@ export async function compileWorkflow(
 
     builder.addNode(node.id, async (rawState) => {
       const state = asGraphState(rawState);
+      const messagesMode: AgentMessagesMode = isolatedNodeIds.has(node.id)
+        ? "isolated"
+        : "inherit";
       switch (data.kind) {
         case "tool":
-          return executeToolNode(state, data.config, resources);
+          return executeToolNode(state, data.config, resources, messagesMode);
         case "agent":
-          return executeAgentNode(state, data.config, resources, createModel);
+          return executeAgentNode(
+            state,
+            data.config,
+            resources,
+            createModel,
+            messagesMode
+          );
         case "human_review":
           return executeHumanReviewNode(state, data.config, node.id);
         case "condition":
