@@ -423,14 +423,23 @@ return {
 
 N 路并行同时 append，`messages` 会变成按节点名序拼接的多路交错对话，`lastAgentText` 则是节点 id 字典序最大那一路的输出（§3 第 5 条）。两者都稳定但都没有业务含义。
 
-- `"inherit"`（默认，旧图）：喂 `state.messages`，写回 `newMessages` 与 `lastAgentText`。
-- `"isolated"`：只吃 `inputMap` 展开后的 HumanMessage + system；**不写回** `messages`，**也不写** `lastAgentText`，只写 `vars[outputKey]`（若确实需要留痕，就只写一条压缩后的摘要 AIMessage，实现时二选一并在注释里说明理由）。
+两种模式（规范含义，不是给用户勾的选项）：
 
-Region 内未显式设置则视为 `isolated`。Join 之后的节点默认 `inherit`，通过 `inputMap` 读并行产物。
+- `"inherit"`：喂 `state.messages`，写回 `newMessages` 与 `lastAgentText`，并写 `vars[outputKey]`。旧串行图走这条。
+- `"isolated"`：不读共享对话；只吃 `inputMap` 展开后的 HumanMessage + system；**不写回** `messages`，**也不写** `lastAgentText`，只写 `vars[outputKey]`（若确实需要留痕，就只写一条压缩后的摘要 AIMessage，实现时二选一并在注释里说明理由）。
+
+**第一期不把 `messagesMode` 做成 DSL 字段，也不做 Inspector 选项。** 编译期用区域分析结果决定，用户不能覆盖：
+
+| 位置 | 模式 | 理由 |
+| --- | --- | --- |
+| Fork–Join **区域内** | 强制 `isolated` | N 路工人只拿任务包（`inputMap` / `vars`），不挂共享线程 |
+| **区外**（含 Join 之后） | 强制 `inherit` | 与旧图一致；用 `inputMap` 读并行产物 |
+
+区外默认要历史，如果以后有这个需求：「某个串行 Agent 不要历史」，再加用户选项；第一期不做。区内也不提供改回 `inherit` 的口子——那会重新引入交错 `messages` 和字典序 `lastAgentText`。
 
 **不采用**「让 Join 按 lane 顺序拼出一个确定的 `lastAgentText`」这条路：Join 一旦有业务逻辑，就得回答分隔符、标题、超长截断等一串问题，这些应该由用户在 Join 后面放一个 Agent 或模板节点决定，而不是编译器替他定。
 
-Inspector 里对 region 内的 Agent 隐藏（或警示）与 `lastAgentText` 相关的提示，避免用户在 `inputMap` 里写 `state.lastAgentText`。
+Inspector 里对 region 内的 Agent 隐藏（或警示）与 `lastAgentText` 相关的提示，避免用户在 `inputMap` 里写 `state.lastAgentText`。不出现 `messagesMode` 下拉框。
 
 ---
 
@@ -478,6 +487,7 @@ SSE 协议（`WorkflowSseEvent`）不变，但 **runner 必须改**，不只是�
 | 嵌套 Fork                            | 区域从「一对」变成栈；前后串联已够用。                                               |
 | 子图、Cron、`human_review` 双出口    | 与并行正交，原 PLAN 已延后。                                                         |
 | 改 `schemaVersion` / checkpointer 表 | 追加 kind 即可。                                                                     |
+| 用户可选的 `messagesMode`            | 第一期按拓扑强制：区内 `isolated`、区外 `inherit`。区外「不要历史」以后再加选项。     |
 
 ---
 
@@ -493,7 +503,7 @@ SSE 协议（`WorkflowSseEvent`）不变，但 **runner 必须改**，不只是�
 ### Phase B — 编译器
 
 - 恒等 Fork/Join；`lane` → `addEdge`；**Join 走数组** `addEdge` **且前驱排序**。
-- `messagesMode`。
+- 按 region 强制 `messagesMode`：区内 `isolated`、区外 `inherit`。不写入 DSL、不做 Inspector。
 - 单测（重点）：
   - **lane 长度不等**（一条 lane 一个节点，另一条两个节点）：断言 Join **只执行一次**且在两路都完成之后。这条直接挡住 §2 的回归。
   - N=2 调用序；N=4 四个 key 都进 `vars`。
@@ -506,6 +516,7 @@ SSE 协议（`WorkflowSseEvent`）不变，但 **runner 必须改**，不只是�
 ### Phase C — 画布
 
 - Palette、动态 Handle、lane CRUD、Drawer、`connect` 按 handle 并存。
+- Drawer **不**提供 `messagesMode`；区内 Agent 隐藏 / 警示 `lastAgentText` 相关提示。
 - 单测：两个 handle 并存；`addForkLane` 后第 3 条可连；同 handle 替换；Join 多入边保留；无 handle 拉线被拒；删到 1 条 lane 被拒；改名同步 `laneKey`。
 
 ### Phase D — 监控
@@ -586,7 +597,7 @@ Phase E 之前，`round` 上限用 LLM condition 的 prompt 约束；Phase E 之
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | fan-in 语义误用                    | §2 写死：Join 用数组 `addEdge`，屏障只挂 Join，前驱排序。Phase B 的不等长 lane 用例作为回归闸门         |
 | 校验与编译对「屏障名单」算法不一致 | 抽共享纯函数，两边调用同一实现                                                                          |
-| 并行 messages 交错                 | region 内默认 `isolated`，不写回 `messages` 也不写 `lastAgentText`；下游只读 `vars`                      |
+| 并行 messages 交错                 | 区内强制 `isolated`（不读不写共享对话），区外 `inherit`；不做 Inspector / DSL 选项。下游只读 `vars` |
 | `lastAgentText` 「确定但任意」      | 顺序按节点 id 字典序，改名即改语义。靠 §7.3 的校验硬拦，而不是靠文档提醒                                |
 | Join 恒等显得多余                  | 必需。屏障只能挂在它上面，普通节点多入边必须保持 OR                                                     |
 | lane 过多 Handle 重叠 / 并发爆炸   | 上限 16 + `maxConcurrency`                                                                              |
