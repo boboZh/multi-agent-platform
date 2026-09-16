@@ -1,5 +1,7 @@
 import {
   BRANCH_KEY_RE,
+  MAX_FORK_LANES,
+  MIN_FORK_LANES,
   NODE_TYPE_BY_KIND,
   type NodeKind,
 } from "@/lib/workflow-dsl/kinds";
@@ -141,8 +143,10 @@ export function removeEdges(
  * 规则来自 NODE_PORT_SPEC 与 DSL 约束：
  * 1. 端点必须存在；自环直接拒（LangGraph 上就是死循环，且没有任何 UI 能表达它的退出条件）。
  * 2. start 无入边、end 无出边。
- * 3. 条件节点必须从某个 branch handle 拉出；非条件节点反过来不允许带 handle。
- * 4. 同一对端点 + 同一 handle 不重复连。
+ * 3. 条件节点必须从某个 branch handle 拉出；Fork 必须从某个 lane handle 拉出；
+ *    其余节点反过来不允许带 handle（匿名单出口）。
+ * 4. 禁止 fork→fork：嵌套并行本期不做，画布层先挡住，避免画出校验必挂的图。
+ * 5. 同一对端点 + 同一 handle 不重复连。
  *
  * 注意：「该端口已有出边」不算非法 —— connect() 会用新边替换旧边，
  * 否则用户改连线时得先手动删旧边，交互很别扭。
@@ -163,12 +167,20 @@ export function canConnect(
   if (source.data.kind === "end") {
     return { ok: false, reason: "结束节点不能有出边。" };
   }
+  if (source.data.kind === "fork" && target.data.kind === "fork") {
+    return { ok: false, reason: "并行扇出不能直接连到另一个并行扇出。" };
+  }
 
   const handle = connection.sourceHandle ?? null;
   if (source.data.kind === "condition") {
     const keys = source.data.config.branches.map((branch) => branch.key);
     if (!handle || !keys.includes(handle)) {
       return { ok: false, reason: "条件节点必须从某个分支端口拉出连线。" };
+    }
+  } else if (source.data.kind === "fork") {
+    const keys = source.data.config.lanes.map((lane) => lane.key);
+    if (!handle || !keys.includes(handle)) {
+      return { ok: false, reason: "并行扇出必须从某个通道端口拉出连线。" };
     }
   } else if (handle) {
     return { ok: false, reason: "该节点只有一个默认出口。" };
@@ -190,8 +202,12 @@ export function canConnect(
  *
  * 出参：新文档，或拒绝原因。
  * 步骤：先过 canConnect → 再按「一个出口只能有一条边」清掉同源同 handle 的旧边 →
- * 追加新边。边的 data.kind 由源节点决定：条件节点写 branch + branchKey，其余写 normal。
- * sourceHandle 与 branchKey 必须同时写且相等，这是编译器选边的唯一依据。
+ * 追加新边。边的 data.kind 由源节点决定：条件写 branch、Fork 写 lane、其余写 normal。
+ * sourceHandle 必须与 branchKey / laneKey 同时写且相等，这是编译器选边的唯一依据。
+ *
+ * 只按 (source, handle) 替换，不按 source 清全部出边：Fork 的 N 个 named handle
+ * 必须能并存，否则连第二条 lane 会把第一条删掉。也不按 target 清入边：Join 要收
+ * 多路扇入，环/驳回走的也是同一条入端口（OR），清掉其它入边会把图拆坏。
  */
 export function connect(
   doc: WorkflowDocument,
@@ -203,21 +219,24 @@ export function connect(
   const source = nodeById(doc, connection.source)!;
   const handle = connection.sourceHandle ?? null;
 
-  // 同一出口只保留最新一条边：端口规格是 1，留着两条会立刻让 graph 校验失败。
   const kept = doc.edges.filter(
     (edge) =>
       !(edge.source === source.id && (edge.sourceHandle ?? null) === handle),
   );
+
+  const data: WorkflowEdge["data"] =
+    source.data.kind === "condition"
+      ? { kind: "branch", branchKey: handle! }
+      : source.data.kind === "fork"
+        ? { kind: "lane", laneKey: handle! }
+        : { kind: "normal" };
 
   const edge: WorkflowEdge = {
     id: nextEdgeId(doc.edges.map((item) => item.id)),
     source: source.id,
     target: connection.target!,
     sourceHandle: handle,
-    data:
-      source.data.kind === "condition"
-        ? { kind: "branch", branchKey: handle! }
-        : { kind: "normal" },
+    data,
   };
 
   return { ok: true, doc: { ...doc, edges: [...kept, edge] } };
@@ -399,6 +418,176 @@ export function setConditionBranchLabel(
             ...data.config,
             branches: data.config.branches.map((branch) =>
               branch.key === key ? { ...branch, label } : branch,
+            ),
+          },
+        }
+      : data,
+  );
+}
+
+function forkNode(doc: WorkflowDocument, nodeId: string) {
+  const node = nodeById(doc, nodeId);
+  if (!node || node.data.kind !== "fork") return null;
+  return node;
+}
+
+/**
+ * 追加一条通道。key 用 lane_N 递增，与拖入时的默认 lane_1 / lane_2 同一命名空间。
+ * 上限 16：Handle 挤在底边会点不准，同时 N 路 LLM 并发也要有硬护栏。
+ */
+export function addForkLane(
+  doc: WorkflowDocument,
+  nodeId: string,
+): DocumentResult {
+  const node = forkNode(doc, nodeId);
+  if (!node || node.data.kind !== "fork") {
+    return { ok: false, reason: "只有并行扇出节点可以增删通道。" };
+  }
+  if (node.data.config.lanes.length >= MAX_FORK_LANES) {
+    return { ok: false, reason: `并行扇出最多 ${MAX_FORK_LANES} 条通道。` };
+  }
+
+  const taken = new Set(node.data.config.lanes.map((lane) => lane.key));
+  let index = taken.size + 1;
+  while (taken.has(`lane_${index}`)) index += 1;
+  const key = `lane_${index}`;
+
+  return {
+    ok: true,
+    doc: updateNode(doc, nodeId, (data) =>
+      data.kind === "fork"
+        ? {
+            ...data,
+            config: {
+              ...data.config,
+              lanes: [
+                ...data.config.lanes,
+                { key, label: `通道 ${index}` },
+              ],
+            },
+          }
+        : data,
+    ),
+  };
+}
+
+/**
+ * 删除通道，并级联删掉该 handle 上的边。
+ * schema 要求至少两条 lane，删到 1 条会让文档直接非法，所以这里先挡住。
+ */
+export function removeForkLane(
+  doc: WorkflowDocument,
+  nodeId: string,
+  key: string,
+): DocumentResult {
+  const node = forkNode(doc, nodeId);
+  if (!node || node.data.kind !== "fork") {
+    return { ok: false, reason: "只有并行扇出节点可以增删通道。" };
+  }
+  const { lanes } = node.data.config;
+  if (!lanes.some((lane) => lane.key === key)) {
+    return { ok: false, reason: `通道「${key}」不存在。` };
+  }
+  if (lanes.length <= MIN_FORK_LANES) {
+    return { ok: false, reason: `并行扇出至少需要保留 ${MIN_FORK_LANES} 条通道。` };
+  }
+
+  const withLanes = updateNode(doc, nodeId, (data) =>
+    data.kind === "fork"
+      ? {
+          ...data,
+          config: {
+            ...data.config,
+            lanes: data.config.lanes.filter((lane) => lane.key !== key),
+          },
+        }
+      : data,
+  );
+
+  return {
+    ok: true,
+    doc: {
+      ...withLanes,
+      edges: withLanes.edges.filter(
+        (edge) =>
+          !(edge.source === nodeId && (edge.sourceHandle ?? null) === key),
+      ),
+    },
+  };
+}
+
+/**
+ * 重命名通道 key，并把 sourceHandle、data.laneKey 一起改掉。
+ * 漏改任何一处都会让画布上线还连着、编译器却选不到边。
+ */
+export function renameForkLane(
+  doc: WorkflowDocument,
+  nodeId: string,
+  oldKey: string,
+  newKey: string,
+): DocumentResult {
+  const node = forkNode(doc, nodeId);
+  if (!node || node.data.kind !== "fork") {
+    return { ok: false, reason: "只有并行扇出节点可以改通道。" };
+  }
+  if (oldKey === newKey) return { ok: true, doc };
+  if (!BRANCH_KEY_RE.test(newKey)) {
+    return { ok: false, reason: "通道 key 只能是字母、数字、下划线，且不能以数字开头。" };
+  }
+  const { lanes } = node.data.config;
+  if (!lanes.some((lane) => lane.key === oldKey)) {
+    return { ok: false, reason: `通道「${oldKey}」不存在。` };
+  }
+  if (lanes.some((lane) => lane.key === newKey)) {
+    return { ok: false, reason: `通道「${newKey}」已存在。` };
+  }
+
+  const withLanes = updateNode(doc, nodeId, (data) =>
+    data.kind === "fork"
+      ? {
+          ...data,
+          config: {
+            ...data.config,
+            lanes: data.config.lanes.map((lane) =>
+              lane.key === oldKey ? { ...lane, key: newKey } : lane,
+            ),
+          },
+        }
+      : data,
+  );
+
+  return {
+    ok: true,
+    doc: {
+      ...withLanes,
+      edges: withLanes.edges.map((edge) =>
+        edge.source === nodeId && (edge.sourceHandle ?? null) === oldKey
+          ? {
+              ...edge,
+              sourceHandle: newKey,
+              data: { kind: "lane", laneKey: newKey },
+            }
+          : edge,
+      ),
+    },
+  };
+}
+
+/** 改通道展示名。label 不参与编译，不用同步边。 */
+export function setForkLaneLabel(
+  doc: WorkflowDocument,
+  nodeId: string,
+  key: string,
+  label: string,
+): WorkflowDocument {
+  return updateNode(doc, nodeId, (data) =>
+    data.kind === "fork"
+      ? {
+          ...data,
+          config: {
+            ...data.config,
+            lanes: data.config.lanes.map((lane) =>
+              lane.key === key ? { ...lane, label } : lane,
             ),
           },
         }

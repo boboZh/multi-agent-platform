@@ -6,6 +6,7 @@ import {
 } from "@/lib/workflow-dsl/schema";
 import {
   addConditionBranch,
+  addForkLane,
   addNode,
   canConnect,
   connect,
@@ -13,8 +14,10 @@ import {
   nextNodeId,
   removeConditionBranch,
   removeEdges,
+  removeForkLane,
   removeNodes,
   renameConditionBranch,
+  renameForkLane,
   sanitizeDocumentForSave,
   updateNode,
 } from "./document";
@@ -35,6 +38,20 @@ function conditionConfig(doc: WorkflowDocument, nodeId: string) {
   const node = doc.nodes.find((item) => item.id === nodeId);
   if (!node || node.data.kind !== "condition") {
     throw new Error("测试夹具期望这是一个条件节点");
+  }
+  return node.data.config;
+}
+
+function docWithFork(): WorkflowDocument {
+  const base = createEmptyWorkflowDocument("测试");
+  const { doc } = addNode(base, "fork", { x: 100, y: 100 });
+  return doc;
+}
+
+function forkConfig(doc: WorkflowDocument, nodeId: string) {
+  const node = doc.nodes.find((item) => item.id === nodeId);
+  if (!node || node.data.kind !== "fork") {
+    throw new Error("测试夹具期望这是一个并行扇出节点");
   }
   return node.data.config;
 }
@@ -414,5 +431,217 @@ describe("sanitizeDocumentForSave", () => {
       nodes: [],
     } as unknown as WorkflowDocument;
     expect(sanitizeDocumentForSave(broken).ok).toBe(false);
+  });
+});
+
+describe("Fork / Join 画布连线与通道 CRUD", () => {
+  it("两个通道 handle 上的边并存，不会因为连第二条而清掉第一条", () => {
+    const { doc: withAgents } = addNode(docWithFork(), "agent", { x: 0, y: 200 });
+    const { doc } = addNode(withAgents, "agent", { x: 200, y: 200 });
+    const first = connect(doc, {
+      source: "n_fork",
+      target: "n_agent",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    if (!first.ok) throw new Error("夹具准备失败");
+    const second = connect(first.doc, {
+      source: "n_fork",
+      target: "n_agent_2",
+      sourceHandle: "lane_2",
+      targetHandle: null,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const outgoing = second.doc.edges.filter((edge) => edge.source === "n_fork");
+    expect(outgoing).toHaveLength(2);
+    expect(outgoing.map((edge) => edge.data)).toEqual([
+      { kind: "lane", laneKey: "lane_1" },
+      { kind: "lane", laneKey: "lane_2" },
+    ]);
+  });
+
+  it("新增通道后第 3 个 handle 可以连线，且写入 lane 边", () => {
+    const added = addForkLane(docWithFork(), "n_fork");
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    expect(forkConfig(added.doc, "n_fork").lanes.map((lane) => lane.key)).toEqual([
+      "lane_1",
+      "lane_2",
+      "lane_3",
+    ]);
+
+    const result = connect(added.doc, {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: "lane_3",
+      targetHandle: null,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const edge = result.doc.edges.find((item) => item.sourceHandle === "lane_3");
+    expect(edge?.data).toEqual({ kind: "lane", laneKey: "lane_3" });
+  });
+
+  it("同一通道 handle 再次连线时替换旧边而不是叠加", () => {
+    const { doc } = addNode(docWithFork(), "agent", { x: 0, y: 200 });
+    const first = connect(doc, {
+      source: "n_fork",
+      target: "n_agent",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    if (!first.ok) throw new Error("夹具准备失败");
+    const second = connect(first.doc, {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const lane1 = second.doc.edges.filter(
+      (edge) => edge.source === "n_fork" && edge.sourceHandle === "lane_1",
+    );
+    expect(lane1).toHaveLength(1);
+    expect(lane1[0].target).toBe("n_end");
+  });
+
+  it("Join 作目标时保留来自不同节点的多条入边", () => {
+    const base = createEmptyWorkflowDocument("测试");
+    const a1 = addNode(base, "agent", { x: 0, y: 0 });
+    const a2 = addNode(a1.doc, "agent", { x: 200, y: 0 });
+    const joined = addNode(a2.doc, "join", { x: 100, y: 200 });
+    const first = connect(joined.doc, {
+      source: "n_agent",
+      target: "n_join",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    if (!first.ok) throw new Error("夹具准备失败");
+    const second = connect(first.doc, {
+      source: "n_agent_2",
+      target: "n_join",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const incoming = second.doc.edges.filter((edge) => edge.target === "n_join");
+    expect(incoming).toHaveLength(2);
+    expect(incoming.map((edge) => edge.source).sort()).toEqual([
+      "n_agent",
+      "n_agent_2",
+    ]);
+  });
+
+  it("边界：Fork 不带通道 handle 的拉线被拒绝", () => {
+    const result = canConnect(docWithFork(), {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("通道端口");
+  });
+
+  it("边界：只剩两条通道时拒绝继续删除", () => {
+    const result = removeForkLane(docWithFork(), "n_fork", "lane_1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("至少");
+  });
+
+  it("重命名通道时同步改掉边的 sourceHandle 与 laneKey", () => {
+    const connected = connect(docWithFork(), {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: "lane_2",
+      targetHandle: null,
+    });
+    if (!connected.ok) throw new Error("夹具准备失败");
+
+    const renamed = renameForkLane(connected.doc, "n_fork", "lane_2", "market");
+    expect(renamed.ok).toBe(true);
+    if (!renamed.ok) return;
+    expect(forkConfig(renamed.doc, "n_fork").lanes.map((lane) => lane.key)).toEqual([
+      "lane_1",
+      "market",
+    ]);
+    const edge = renamed.doc.edges.find((item) => item.source === "n_fork");
+    expect(edge?.sourceHandle).toBe("market");
+    expect(edge?.data).toEqual({ kind: "lane", laneKey: "market" });
+  });
+
+  it("边界：未知 handle、fork 直连 fork、以及超上限增通道都被拒绝", () => {
+    const forkA = docWithFork();
+    const { doc: twoForks } = addNode(forkA, "fork", { x: 300, y: 100 });
+    expect(
+      canConnect(twoForks, {
+        source: "n_fork",
+        target: "n_fork_2",
+        sourceHandle: "lane_1",
+        targetHandle: null,
+      }).ok,
+    ).toBe(false);
+    expect(
+      canConnect(forkA, {
+        source: "n_fork",
+        target: "n_end",
+        sourceHandle: "ghost",
+        targetHandle: null,
+      }).ok,
+    ).toBe(false);
+
+    let current = forkA;
+    for (let i = 0; i < 14; i += 1) {
+      const added = addForkLane(current, "n_fork");
+      if (!added.ok) throw new Error("夹具准备失败");
+      current = added.doc;
+    }
+    expect(forkConfig(current, "n_fork").lanes).toHaveLength(16);
+    const overflow = addForkLane(current, "n_fork");
+    expect(overflow.ok).toBe(false);
+    if (!overflow.ok) expect(overflow.reason).toContain("最多");
+  });
+
+  it("边界：对非 Fork 节点做通道操作时拒绝而不是崩溃", () => {
+    const base = createEmptyWorkflowDocument("测试");
+    expect(addForkLane(base, "n_start").ok).toBe(false);
+    expect(removeForkLane(base, "n_start", "lane_1").ok).toBe(false);
+    expect(renameForkLane(base, "n_start", "lane_1", "lane_x").ok).toBe(false);
+    expect(renameForkLane(docWithFork(), "n_fork", "lane_1", "1bad").ok).toBe(
+      false,
+    );
+  });
+
+  it("删除通道时连带删掉挂在该端口上的边，其它通道的边保留", () => {
+    const added = addForkLane(docWithFork(), "n_fork");
+    if (!added.ok) throw new Error("夹具准备失败");
+    const lane1 = connect(added.doc, {
+      source: "n_fork",
+      target: "n_end",
+      sourceHandle: "lane_1",
+      targetHandle: null,
+    });
+    if (!lane1.ok) throw new Error("夹具准备失败");
+    const { doc: withAgent } = addNode(lane1.doc, "agent", { x: 0, y: 200 });
+    const lane3 = connect(withAgent, {
+      source: "n_fork",
+      target: "n_agent",
+      sourceHandle: "lane_3",
+      targetHandle: null,
+    });
+    if (!lane3.ok) throw new Error("夹具准备失败");
+
+    const removed = removeForkLane(lane3.doc, "n_fork", "lane_3");
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    expect(
+      removed.doc.edges.some((edge) => edge.sourceHandle === "lane_3"),
+    ).toBe(false);
+    expect(
+      removed.doc.edges.some((edge) => edge.sourceHandle === "lane_1"),
+    ).toBe(true);
   });
 });

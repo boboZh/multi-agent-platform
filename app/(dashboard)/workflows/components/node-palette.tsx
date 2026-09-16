@@ -4,6 +4,8 @@ import {
   Bot,
   CircleStop,
   GitBranch,
+  GitFork,
+  Merge,
   UserCheck,
   Wrench,
   type LucideIcon,
@@ -25,6 +27,8 @@ const PALETTE_ITEMS: Array<{
   { kind: "agent", icon: Bot, hint: "调用已配置的智能体" },
   { kind: "tool", icon: Wrench, hint: "单次结构化工具调用" },
   { kind: "condition", icon: GitBranch, hint: "表达式或 LLM 路由分支" },
+  { kind: "fork", icon: GitFork, hint: "并行扇出，可增删通道" },
+  { kind: "join", icon: Merge, hint: "等待全部完成" },
   { kind: "human_review", icon: UserCheck, hint: "挂起等待人工填表" },
   { kind: "end", icon: CircleStop, hint: "接到流程终点" },
 ];

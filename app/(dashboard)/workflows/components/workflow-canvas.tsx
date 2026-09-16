@@ -93,9 +93,13 @@ function WorkflowCanvasInner({
     () =>
       doc.edges.map((edge) => ({
         ...edge,
-        // 条件边标上分支名，用户不点开抽屉也知道这条线走的哪个分支。
-        label: edge.data.kind === "branch" ? edge.data.branchKey : undefined,
-        animated: edge.data.kind === "branch",
+        label:
+          edge.data.kind === "branch"
+            ? edge.data.branchKey
+            : edge.data.kind === "lane"
+              ? edge.data.laneKey
+              : undefined,
+        animated: edge.data.kind === "branch" || edge.data.kind === "lane",
       })),
     [doc.edges],
   );

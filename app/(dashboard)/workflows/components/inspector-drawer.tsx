@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { analyzeForkJoinRegions } from "@/lib/workflow-dsl/fork-join-regions";
 import { REVIEW_FIELD_TYPES, NODE_KIND_LABELS, START_VARIABLE_TYPES, START_VARIABLE_TYPE_LABELS } from "@/lib/workflow-dsl/kinds";
 import type {
   StartVariable,
@@ -15,9 +16,13 @@ import type {
 import { MODEL_LABELS, MODEL_VALUES } from "../../agents/lib/types";
 import {
   addConditionBranch,
+  addForkLane,
   removeConditionBranch,
+  removeForkLane,
   renameConditionBranch,
+  renameForkLane,
   setConditionBranchLabel,
+  setForkLaneLabel,
   updateNode,
 } from "../lib/document";
 import {
@@ -93,9 +98,11 @@ function Field({
 function BranchKeyInput({
   value,
   onCommit,
+  ariaLabel = "分支 key",
 }: {
   value: string;
   onCommit: (next: string) => void;
+  ariaLabel?: string;
 }) {
   const [draft, setDraft] = useState(value);
 
@@ -118,7 +125,7 @@ function BranchKeyInput({
         if (e.key === "Escape") setDraft(value);
       }}
       className="h-8 font-mono text-xs"
-      aria-label="分支 key"
+      aria-label={ariaLabel}
     />
   );
 }
@@ -795,6 +802,179 @@ function ConditionForm({
   );
 }
 
+function ForkForm({
+  doc,
+  nodeId,
+  data,
+  onDocChange,
+  onChange,
+  onError,
+}: {
+  doc: WorkflowDocument;
+  nodeId: string;
+  data: Extract<WorkflowNodeData, { kind: "fork" }>;
+  onDocChange: (doc: WorkflowDocument) => void;
+  onChange: (next: WorkflowNodeData) => void;
+  onError: (message: string | null) => void;
+}) {
+  const { config } = data;
+  const analysis = analyzeForkJoinRegions(doc);
+  const region = analysis.regions.find((item) => item.forkId === nodeId);
+  const inferredJoinId = region?.joinId;
+  const joinNodes = doc.nodes.filter((node) => node.data.kind === "join");
+
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-foreground">通道</span>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              const result = addForkLane(doc, nodeId);
+              if (!result.ok) {
+                onError(result.reason);
+                return;
+              }
+              onError(null);
+              onDocChange(result.doc);
+            }}
+          >
+            <Plus className="h-3 w-3" />
+            添加
+          </Button>
+        </div>
+        {config.lanes.map((lane) => (
+          <div
+            key={lane.key}
+            className="space-y-1.5 rounded-lg border border-primary/15 bg-muted/40 p-2"
+          >
+            <div className="flex items-center gap-1.5">
+              <BranchKeyInput
+                value={lane.key}
+                ariaLabel="通道 key"
+                onCommit={(next) => {
+                  const result = renameForkLane(doc, nodeId, lane.key, next);
+                  if (!result.ok) {
+                    onError(result.reason);
+                    return;
+                  }
+                  onError(null);
+                  onDocChange(result.doc);
+                }}
+              />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`删除通道 ${lane.key}`}
+                onClick={() => {
+                  const result = removeForkLane(doc, nodeId, lane.key);
+                  if (!result.ok) {
+                    onError(result.reason);
+                    return;
+                  }
+                  onError(null);
+                  onDocChange(result.doc);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <Input
+              value={lane.label}
+              placeholder="显示名"
+              className="h-8"
+              aria-label={`通道 ${lane.key} 的显示名`}
+              onChange={(e) =>
+                onDocChange(setForkLaneLabel(doc, nodeId, lane.key, e.target.value))
+              }
+            />
+          </div>
+        ))}
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          改 key 会同步改掉对应连线；删通道会连带删掉那条线。至少保留 2 条。
+        </p>
+      </div>
+
+      <Field
+        label="配对 Join"
+        hint="由各通道的共同汇合点推断。显式填写只作断言：和推断结果不一致时发布会失败。"
+      >
+        <div className="rounded-lg border border-primary/15 bg-muted/40 px-2.5 py-2 text-sm">
+          {inferredJoinId ? (
+            <span className="font-mono text-xs">{inferredJoinId}</span>
+          ) : (
+            <span className="text-muted-foreground">尚未配对</span>
+          )}
+        </div>
+      </Field>
+
+      <Field
+        label="断言 Join（可选）"
+        htmlFor="node-fork-join"
+        hint="一般留空即可。只有拓扑推断可能歧义时才需要钉死。"
+      >
+        <select
+          id="node-fork-join"
+          className={SELECT_CLASS}
+          value={config.joinId ?? ""}
+          onChange={(e) =>
+            onChange({
+              ...data,
+              config: {
+                ...config,
+                joinId: e.target.value || undefined,
+              },
+            })
+          }
+        >
+          <option value="">不指定，仅用推断</option>
+          {joinNodes.map((join) => (
+            <option key={join.id} value={join.id}>
+              {join.data.label} ({join.id})
+            </option>
+          ))}
+        </select>
+      </Field>
+    </>
+  );
+}
+
+function JoinForm({
+  doc,
+  nodeId,
+}: {
+  doc: WorkflowDocument;
+  nodeId: string;
+}) {
+  const region = analyzeForkJoinRegions(doc).regions.find(
+    (item) => item.joinId === nodeId,
+  );
+
+  return (
+    <>
+      <Field
+        label="等待策略"
+        hint="第一期只支持全部通道到齐后再放行。屏障挂在本节点上，下游多入边仍是或关系。"
+      >
+        <div className="rounded-lg border border-primary/15 bg-muted/40 px-2.5 py-2 text-sm">
+          全部完成
+        </div>
+      </Field>
+      <Field label="配对 Fork" hint="从连线拓扑推断，不能手改，以免和实际边不一致。">
+        <div className="rounded-lg border border-primary/15 bg-muted/40 px-2.5 py-2 text-sm">
+          {region ? (
+            <span className="font-mono text-xs">{region.forkId}</span>
+          ) : (
+            <span className="text-muted-foreground">尚未配对</span>
+          )}
+        </div>
+      </Field>
+    </>
+  );
+}
+
 function HumanReviewForm({
   data,
   onChange,
@@ -965,8 +1145,14 @@ function EdgeInspector({
           <span className="font-mono text-xs">{edge.data.branchKey}</span>
         </div>
       ) : null}
+      {edge.data.kind === "lane" ? (
+        <div className="flex justify-between gap-2">
+          <span className="text-muted-foreground">通道</span>
+          <span className="font-mono text-xs">{edge.data.laneKey}</span>
+        </div>
+      ) : null}
       <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-        连线的分支归属跟着端口走，要改请在画布上重新连，或到条件节点里改分支 key。
+        连线的分支/通道归属跟着端口走，要改请在画布上重新连，或到条件 / 并行节点里改 key。
       </p>
     </div>
   );
@@ -1100,6 +1286,19 @@ export function InspectorDrawer({
                 onChange={updateData}
                 onError={onError}
               />
+            ) : null}
+            {node.data.kind === "fork" ? (
+              <ForkForm
+                doc={doc}
+                nodeId={node.id}
+                data={node.data}
+                onDocChange={onDocChange}
+                onChange={updateData}
+                onError={onError}
+              />
+            ) : null}
+            {node.data.kind === "join" ? (
+              <JoinForm doc={doc} nodeId={node.id} />
             ) : null}
             {node.data.kind === "human_review" ? (
               <HumanReviewForm

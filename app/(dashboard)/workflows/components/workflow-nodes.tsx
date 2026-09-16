@@ -109,7 +109,14 @@ function summaryOf(
         ? { text: "无入参", muted: true }
         : { text: `${count} 个入参`, muted: false };
     }
-    default:
+    case "fork":
+      return {
+        text: `${data.config.lanes.length} 条通道`,
+        muted: false,
+      };
+    case "join":
+      return { text: "等待全部完成", muted: false };
+    case "end":
       return { text: "", muted: true };
   }
 }
@@ -128,8 +135,13 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
 
   // 端口有无一律读 NODE_PORT_SPEC，和连线校验用的是同一张表，不会出现「画得出但连不上」。
   const spec = NODE_PORT_SPEC[data.kind];
-  const isCondition = data.kind === "condition";
-  const branches = isCondition ? data.config.branches : [];
+  // Fork / Condition 都是 named source；共用同一套均分 Handle，差别只在边 kind。
+  const namedSources =
+    data.kind === "condition"
+      ? data.config.branches
+      : data.kind === "fork"
+        ? data.config.lanes
+        : [];
 
   return (
     <div
@@ -179,30 +191,29 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
         </div>
       ) : null}
 
-      {isCondition ? (
+      {namedSources.length > 0 ? (
         <>
-          {/* 分支名要贴着各自的端口显示，否则多分支时用户分不清哪条线是哪个 key。 */}
+          {/* 通道/分支名要贴着各自的端口显示，否则多出口时用户分不清哪条线是哪个 key。 */}
           <div className="mt-2 flex justify-between gap-1 text-[10px] text-muted-foreground">
-            {branches.map((branch) => (
-              <span key={branch.key} className="truncate" title={branch.key}>
-                {branch.label || branch.key}
+            {namedSources.map((port) => (
+              <span key={port.key} className="truncate" title={port.key}>
+                {port.label || port.key}
               </span>
             ))}
           </div>
-          {branches.map((branch, index) => (
+          {namedSources.map((port, index) => (
             <Handle
-              key={branch.key}
-              id={branch.key}
+              key={port.key}
+              id={port.key}
               type="source"
               position={Position.Bottom}
-              // 端口按分支数均分底边；用 key 当 handle id，编译器据此选边。
-              style={{ left: `${((index + 1) / (branches.length + 1)) * 100}%` }}
+              style={{ left: `${((index + 1) / (namedSources.length + 1)) * 100}%` }}
               className={HANDLE_CLASS}
             />
           ))}
         </>
       ) : spec.sources !== 0 ? (
-        // 不带 id 的 source handle → 连接时 sourceHandle 为 null，正是非条件边的约定。
+        // 不带 id 的 source handle → 连接时 sourceHandle 为 null，正是非 named 边的约定。
         <Handle
           type="source"
           position={Position.Bottom}
