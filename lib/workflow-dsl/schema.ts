@@ -19,6 +19,10 @@ import {
   defaultForkLanes,
   type NodeKind,
 } from "@/lib/workflow-dsl/kinds";
+import {
+  analyzeForkJoinRegions,
+  collectRegionWriteIssues,
+} from "@/lib/workflow-dsl/fork-join-regions";
 
 export const graphNodeIdSchema = z
   .string()
@@ -614,9 +618,74 @@ function refinePortsAndControlFlow(
       continue;
     }
 
+    if (node.data.kind === "fork") {
+      const { lanes } = node.data.config;
+      const keys = new Set(lanes.map((lane) => lane.key));
+
+      for (const lane of lanes) {
+        const matches = outs.filter((edge) => handleOf(edge) === lane.key);
+        if (matches.length === 0) {
+          addIssue(
+            ctx,
+            `并行通道「${lane.key}」必须有且仅有一条出边`,
+            ["nodes", nodeIndex, "data", "config", "lanes"],
+            { nodeId: node.id }
+          );
+          continue;
+        }
+        if (matches.length > 1) {
+          addIssue(
+            ctx,
+            `并行通道「${lane.key}」存在多条出边`,
+            ["nodes", nodeIndex, "data", "config", "lanes"],
+            { nodeId: node.id }
+          );
+        }
+        for (const edge of matches) {
+          const edgeIndex = doc.edges.findIndex((item) => item.id === edge.id);
+          if (edge.data.kind !== "lane") {
+            addIssue(
+              ctx,
+              "Fork 出边的 data.kind 必须为 lane",
+              ["edges", edgeIndex, "data", "kind"],
+              { nodeId: node.id, edgeId: edge.id }
+            );
+          } else if (edge.data.laneKey !== lane.key) {
+            addIssue(
+              ctx,
+              "sourceHandle、laneKey 与 lanes[].key 必须一致",
+              ["edges", edgeIndex, "data", "laneKey"],
+              { nodeId: node.id, edgeId: edge.id }
+            );
+          }
+        }
+      }
+
+      for (const edge of outs) {
+        const handle = handleOf(edge);
+        if (!handle || !keys.has(handle)) {
+          const edgeIndex = doc.edges.findIndex((item) => item.id === edge.id);
+          addIssue(
+            ctx,
+            "Fork 出边的 sourceHandle 必须是某个 lane key",
+            ["edges", edgeIndex, "sourceHandle"],
+            { nodeId: node.id, edgeId: edge.id }
+          );
+        }
+      }
+      continue;
+    }
+
     for (const edge of outs) {
       const edgeIndex = doc.edges.findIndex((item) => item.id === edge.id);
-      if (edge.data.kind !== "normal") {
+      if (edge.data.kind === "lane") {
+        addIssue(
+          ctx,
+          "非 Fork 节点不得发出 lane 边",
+          ["edges", edgeIndex, "data", "kind"],
+          { nodeId: node.id, edgeId: edge.id }
+        );
+      } else if (edge.data.kind !== "normal") {
         addIssue(
           ctx,
           "非条件出边的 data.kind 必须为 normal",
@@ -628,6 +697,24 @@ function refinePortsAndControlFlow(
 
     if (node.data.kind === "human_review" && outs.length > 1) {
       addIssue(ctx, "人工审核节点默认只能有一条出边", ["nodes", nodeIndex], {
+        nodeId: node.id,
+      });
+    }
+
+    if (
+      (node.data.kind === "agent" || node.data.kind === "tool") &&
+      outs.length > 1
+    ) {
+      addIssue(
+        ctx,
+        "并行只能从 Fork 的通道端口发出，智能体/工具不能有多条匿名出边",
+        ["nodes", nodeIndex],
+        { nodeId: node.id }
+      );
+    }
+
+    if (node.data.kind === "join" && ins.length < 2) {
+      addIssue(ctx, "Join 至少需要两条入边", ["nodes", nodeIndex], {
         nodeId: node.id,
       });
     }
@@ -647,6 +734,16 @@ function refinePortsAndControlFlow(
         addIssue(
           ctx,
           "可运行图中人工审核节点必须恰好有一条出边",
+          ["nodes", nodeIndex],
+          {
+            nodeId: node.id,
+          }
+        );
+      }
+      if (node.data.kind === "join" && outs.length !== 1) {
+        addIssue(
+          ctx,
+          "可运行图中 Join 必须恰好有一条出边",
           ["nodes", nodeIndex],
           {
             nodeId: node.id,
@@ -687,6 +784,37 @@ function refineTopology(
   // refineIsolateNode(doc, ctx);
   refineEdgesExist(doc, ctx);
   refinePortsAndControlFlow(doc, ctx, mode);
+  refineForkJoinRegions(doc, ctx, mode);
+}
+
+function refineForkJoinRegions(
+  doc: WorkflowDocument,
+  ctx: z.RefinementCtx,
+  mode: WorkflowValidationMode
+) {
+  const analysis = analyzeForkJoinRegions(doc);
+  for (const issue of analysis.issues) {
+    const nodeIndex = issue.nodeId
+      ? doc.nodes.findIndex((node) => node.id === issue.nodeId)
+      : -1;
+    const path: Array<string | number> =
+      nodeIndex >= 0 ? ["nodes", nodeIndex] : ["nodes"];
+    addIssue(ctx, issue.message, path, {
+      nodeId: issue.nodeId,
+      edgeId: issue.edgeId,
+    });
+  }
+  // 编译模式才校验并行区写入的合法性
+  if (mode === "compile") {
+    for (const issue of collectRegionWriteIssues(doc, analysis.regions)) {
+      const nodeIndex = issue.nodeId
+        ? doc.nodes.findIndex((node) => node.id === issue.nodeId)
+        : -1;
+      const path: Array<string | number> =
+        nodeIndex >= 0 ? ["nodes", nodeIndex] : ["nodes"];
+      addIssue(ctx, issue.message, path, { nodeId: issue.nodeId });
+    }
+  }
 }
 
 export const workflowDocumentSchema = workflowDocumentShapeSchema.superRefine(

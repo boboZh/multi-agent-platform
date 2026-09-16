@@ -1069,3 +1069,291 @@ describe("formatWorkflowIssues", () => {
     expect(formatWorkflowIssues(error)).toEqual([]);
   });
 });
+
+function forkNode(id: string, laneCount: number, joinId?: string) {
+  const data = createNodeData("fork");
+  if (data.kind !== "fork") throw new Error("unreachable");
+  data.config = {
+    lanes: Array.from({ length: laneCount }, (_, index) => ({
+      key: `lane_${index + 1}`,
+      label: `通道 ${index + 1}`,
+    })),
+    ...(joinId ? { joinId } : {}),
+  };
+  return { ...node("fork", id), data };
+}
+
+function agentWithOutput(id: string, outputKey: string, agentId?: string) {
+  const data = createNodeData("agent");
+  if (data.kind !== "agent") throw new Error("unreachable");
+  data.config = {
+    ...data.config,
+    outputKey,
+    ...(agentId ? { agentId } : {}),
+  };
+  return { ...node("agent", id), data };
+}
+
+function laneEdge(id: string, source: string, target: string, key: string) {
+  return {
+    id,
+    source,
+    target,
+    sourceHandle: key,
+    data: { kind: "lane" as const, laneKey: key },
+  };
+}
+
+function normalEdge(id: string, source: string, target: string) {
+  return {
+    id,
+    source,
+    target,
+    data: { kind: "normal" as const },
+  };
+}
+
+function parallelNDoc(laneCount: number, joinId?: string): WorkflowDocument {
+  const agents = Array.from({ length: laneCount }, (_, index) =>
+    agentWithOutput(`n_a${index + 1}`, `out_${index + 1}`),
+  );
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: `并行 N=${laneCount}`,
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      forkNode("n_fork", laneCount, joinId),
+      ...agents,
+      node("join", "n_join"),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e_start", "n_start", "n_fork"),
+      ...agents.map((agent, index) =>
+        laneEdge(`e_lane_${index + 1}`, "n_fork", agent.id, `lane_${index + 1}`),
+      ),
+      ...agents.map((agent, index) =>
+        normalEdge(`e_join_${index + 1}`, agent.id, "n_join"),
+      ),
+      normalEdge("e_end", "n_join", "n_end"),
+    ],
+  };
+}
+
+describe("refineForkJoinRegions", () => {
+  it("合法 N=2 并行图在 graph 模式通过", () => {
+    expect(parseWorkflowDocument(parallelNDoc(2), "graph").ok).toBe(true);
+  });
+
+  it("合法 N=3 并行图在 graph 模式通过", () => {
+    expect(parseWorkflowDocument(parallelNDoc(3), "graph").ok).toBe(true);
+  });
+
+  it("缺一条 lane 边时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.edges = doc.edges.filter((edge) => edge.id !== "e_lane_2");
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) =>
+          err.message.includes("并行通道「lane_2」必须有且仅有一条出边"),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：区域内 Agent 都用默认 outputKey 时 graph 可通过、compile 拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.nodes = doc.nodes.map((item) =>
+      item.data.kind === "agent"
+        ? {
+            ...item,
+            data: {
+              ...createNodeData("agent"),
+              config: {
+                ...createNodeData("agent").config,
+                agentId: AGENT_UUID,
+              },
+            },
+          }
+        : item,
+    );
+    expect(parseWorkflowDocument(doc, "graph").ok).toBe(true);
+    const compiled = parseWorkflowDocument(doc, "compile");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) {
+      expect(
+        compiled.errors.some((err) => err.message.includes("lastAgentText")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：区域内 inputMap 引用 state.lastAgentText 时 compile 拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.nodes = doc.nodes.map((item) => {
+      if (item.data.kind !== "agent") return item;
+      return {
+        ...item,
+        data: {
+          ...item.data,
+          config: {
+            ...item.data.config,
+            agentId: AGENT_UUID,
+            ...(item.id === "n_a1"
+              ? { inputMap: { q: "state.lastAgentText" } }
+              : {}),
+          },
+        },
+      };
+    });
+    const compiled = parseWorkflowDocument(doc, "compile");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) {
+      expect(
+        compiled.errors.some((err) =>
+          err.message.includes("state.lastAgentText"),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：通道内出现人工审核时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.nodes = doc.nodes.map((item) =>
+      item.id === "n_a1" ? node("human_review", "n_a1") : item,
+    );
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("人工审核")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：通道内出现 Condition 时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.nodes = doc.nodes.map((item) =>
+      item.id === "n_a1" ? node("condition", "n_a1") : item,
+    );
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("条件节点")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：两条通道共享节点时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.edges = doc.edges
+      .filter((edge) => edge.id !== "e_join_2")
+      .map((edge) =>
+        edge.id === "e_lane_2" ? { ...edge, target: "n_a1" } : edge,
+      );
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("共享节点")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：并行区内非 Join 扇入时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.nodes.push(agentWithOutput("n_extra", "out_x"));
+    doc.edges.push(normalEdge("e_fanin", "n_extra", "n_a1"));
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("禁止扇入")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：Start 直连 Join 时拒绝", () => {
+    const parsed = parseWorkflowDocument(
+      {
+        schemaVersion: WORKFLOW_SCHEMA_VERSION,
+        name: "Start-Join",
+        startNodeId: "n_start",
+        nodes: [
+          node("start", "n_start"),
+          node("join", "n_join"),
+          node("end", "n_end"),
+          node("agent", "n_a"),
+        ],
+        edges: [
+          normalEdge("e_start_join", "n_start", "n_join"),
+          normalEdge("e_a_join", "n_a", "n_join"),
+          normalEdge("e_end", "n_join", "n_end"),
+        ],
+      },
+      "graph",
+    );
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("Start 不能直连 Join")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：空通道（lane 直连 Join）时拒绝", () => {
+    const doc = parallelNDoc(2);
+    doc.edges = doc.edges.map((edge) =>
+      edge.id === "e_lane_1" ? { ...edge, target: "n_join" } : edge,
+    );
+    doc.edges = doc.edges.filter((edge) => edge.id !== "e_join_1");
+    const parsed = parseWorkflowDocument(doc, "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("不能直接连到 Join")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：joinId 与推断结果冲突时拒绝", () => {
+    const parsed = parseWorkflowDocument(parallelNDoc(2, "n_end"), "graph");
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("joinId 断言")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：智能体匿名多出边时拒绝，并行只能从 Fork 出去", () => {
+    const parsed = parseWorkflowDocument(
+      {
+        schemaVersion: WORKFLOW_SCHEMA_VERSION,
+        name: "多出边",
+        startNodeId: "n_start",
+        nodes: [
+          node("start", "n_start"),
+          node("agent", "n_agent"),
+          node("end", "n_end_a"),
+          node("end", "n_end_b"),
+        ],
+        edges: [
+          normalEdge("e1", "n_start", "n_agent"),
+          normalEdge("e2", "n_agent", "n_end_a"),
+          normalEdge("e3", "n_agent", "n_end_b"),
+        ],
+      },
+      "graph",
+    );
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(
+        parsed.errors.some((err) => err.message.includes("匿名出边")),
+      ).toBe(true);
+    }
+  });
+});
