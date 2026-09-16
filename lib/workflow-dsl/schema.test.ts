@@ -18,6 +18,8 @@ import {
   workflowDocumentShapeSchema,
   workflowEdgeSchema,
   workflowNodeSchema,
+  forkConfigSchema,
+  joinConfigSchema,
   type WorkflowDocument,
 } from "@/lib/workflow-dsl/schema";
 import { z } from "zod";
@@ -151,6 +153,20 @@ describe("createNodeData / defaultConfigForKind", () => {
     const data = createNodeData("tool", "");
     expect(data.label).toBe("");
     expect(data.kind).toBe("tool");
+  });
+
+  it("Fork 默认两条通用通道且不含 joinId，Join 默认 wait=all", () => {
+    const fork = createNodeData("fork");
+    expect(fork.kind).toBe("fork");
+    expect(fork.label).toBe(NODE_KIND_LABELS.fork);
+    expect(fork.config).toEqual({
+      lanes: [
+        { key: "lane_1", label: "通道 1" },
+        { key: "lane_2", label: "通道 2" },
+      ],
+    });
+    const join = defaultConfigForKind("join");
+    expect(join).toEqual({ wait: "all" });
   });
 });
 
@@ -295,6 +311,72 @@ describe("workflowEdgeSchema", () => {
       target: "n_b",
     });
     expect(parsed.data).toEqual({ kind: "normal" });
+  });
+
+  it("lane 边必须带合法 laneKey，不能与 branch 共用字段", () => {
+    const parsed = workflowEdgeSchema.parse({
+      id: "e_lane",
+      source: "n_fork",
+      target: "n_agent",
+      sourceHandle: "lane_1",
+      data: { kind: "lane", laneKey: "lane_1" },
+    });
+    expect(parsed.data).toEqual({ kind: "lane", laneKey: "lane_1" });
+  });
+});
+
+describe("forkConfigSchema / joinConfigSchema", () => {
+  it("合法 N=2 通道且 key 不重复时通过", () => {
+    const parsed = forkConfigSchema.parse({
+      lanes: [
+        { key: "lane_a", label: "A" },
+        { key: "lane_b", label: "B" },
+      ],
+    });
+    expect(parsed.lanes).toHaveLength(2);
+    expect(parsed.joinId).toBeUndefined();
+  });
+
+  it("边界：只有 1 条通道时拒绝", () => {
+    const result = forkConfigSchema.safeParse({
+      lanes: [{ key: "lane_1", label: "通道 1" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：17 条通道超过上限时拒绝", () => {
+    const lanes = Array.from({ length: 17 }, (_, index) => ({
+      key: `lane_${index + 1}`,
+      label: `通道 ${index + 1}`,
+    }));
+    const result = forkConfigSchema.safeParse({ lanes });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：通道 key 重复时拒绝，避免两条 lane 抢同一个 handle", () => {
+    const result = forkConfigSchema.safeParse({
+      lanes: [
+        { key: "lane_1", label: "甲" },
+        { key: "lane_1", label: "乙" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：lane key 含连字符时拒绝", () => {
+    const result = forkConfigSchema.safeParse({
+      lanes: [
+        { key: "lane-1", label: "通道 1" },
+        { key: "lane_2", label: "通道 2" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：Join wait 不是 all 时拒绝", () => {
+    const result = joinConfigSchema.safeParse({ wait: "any" });
+    expect(result.success).toBe(false);
+    expect(joinConfigSchema.parse({ wait: "all" })).toEqual({ wait: "all" });
   });
 });
 

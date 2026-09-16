@@ -6,6 +6,8 @@ import {
   Bot,
   CircleStop,
   GitBranch,
+  GitFork,
+  Merge,
   Play,
   UserCheck,
   Wrench,
@@ -20,8 +22,8 @@ import type { WorkflowNodeData } from "@/lib/workflow-dsl/schema";
 import { cn } from "@/lib/utils";
 
 /**
- * 画布节点。六种 kind 共用一个渲染器：端口数量与语义完全由 data.kind 决定，
- * 分成六个组件只会让「条件节点动态 handle」这段逻辑散落多处。
+ * 画布节点。各 kind 共用一个渲染器：端口数量与语义完全由 data.kind 决定，
+ * 拆成多个组件只会让「条件 / Fork 动态 handle」这段逻辑散落多处。
  * nodeTypes 在模块作用域定义并导出，避免每次渲染换新对象导致 reactflow 整图重挂。
  */
 
@@ -64,6 +66,8 @@ const KIND_ICONS: Record<NodeKind, LucideIcon> = {
   tool: Wrench,
   condition: GitBranch,
   human_review: UserCheck,
+  fork: GitFork,
+  join: Merge,
 };
 
 const HANDLE_CLASS =
@@ -141,7 +145,7 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
         isInterrupted && "border-amber-500 ring-2 ring-amber-400/40",
       )}
     >
-      {spec.targets > 0 ? (
+      {spec.targets !== 0 ? (
         <Handle
           type="target"
           position={Position.Top}
@@ -211,7 +215,7 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
 
 const WorkflowNodeCard = memo(WorkflowNodeCardImpl);
 
-/** 六个画布 type 全部指向同一个渲染器；语义差异在组件内部按 data.kind 分流。 */
+/** 画布 type 全部指向同一个渲染器；语义差异在组件内部按 data.kind 分流。 */
 export const workflowNodeTypes = {
   startNode: WorkflowNodeCard,
   endNode: WorkflowNodeCard,
@@ -219,4 +223,6 @@ export const workflowNodeTypes = {
   toolNode: WorkflowNodeCard,
   conditionNode: WorkflowNodeCard,
   interruptNode: WorkflowNodeCard,
+  forkNode: WorkflowNodeCard,
+  joinNode: WorkflowNodeCard,
 };

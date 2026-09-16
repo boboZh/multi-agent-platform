@@ -7,12 +7,16 @@ import {
   NODE_KIND_LABELS,
   NODE_KINDS,
   NODE_PORT_SPEC,
+  DEFAULT_JOIN_WAIT,
+  MAX_FORK_LANES,
+  MIN_FORK_LANES,
   NODE_TYPE_BY_KIND,
   NODE_TYPES,
   REVIEW_FIELD_TYPES,
   START_VARIABLE_TYPES,
   WORKFLOW_SCHEMA_VERSION,
   defaultConditionBranches,
+  defaultForkLanes,
   type NodeKind,
 } from "@/lib/workflow-dsl/kinds";
 
@@ -170,6 +174,44 @@ export const humanReviewConfigSchema = z.object({
   formFields: z.array(reviewFormFieldSchema).min(1),
 });
 
+export const forkLaneSchema = z.object({
+  key: branchKeySchema,
+  label: z.string().min(1),
+});
+
+/**
+ * lanes 数是画布配置，不是业务常量：下限 2 才能构成并行，上限 16 挡住 Handle 重叠与并发尖峰。
+ * joinId 只是可选断言，不是控制流边；配对是否成立留给后续区域校验。
+ */
+export const forkConfigSchema = z
+  .object({
+    lanes: z
+      .array(forkLaneSchema)
+      .min(MIN_FORK_LANES, `Fork 至少需要 ${MIN_FORK_LANES} 条通道`)
+      .max(MAX_FORK_LANES, `Fork 最多 ${MAX_FORK_LANES} 条通道`)
+      .superRefine((lanes, ctx) => {
+        const seen = new Set<string>();
+        for (const [index, lane] of lanes.entries()) {
+          if (seen.has(lane.key)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `通道 key 重复: ${lane.key}`,
+              path: [index, "key"],
+            });
+          }
+          seen.add(lane.key);
+        }
+      }),
+    joinId: graphNodeIdSchema.optional(),
+  })
+  .strict();
+
+export const joinConfigSchema = z
+  .object({
+    wait: z.literal(DEFAULT_JOIN_WAIT),
+  })
+  .strict();
+
 export const startNodeDataSchema = z.object({
   kind: z.literal("start"),
   label: z.string().min(1),
@@ -212,6 +254,20 @@ export const humanReviewNodeDataSchema = z.object({
   config: humanReviewConfigSchema,
 });
 
+export const forkNodeDataSchema = z.object({
+  kind: z.literal("fork"),
+  label: z.string().min(1),
+  ui: nodeUiSchema.optional(),
+  config: forkConfigSchema,
+});
+
+export const joinNodeDataSchema = z.object({
+  kind: z.literal("join"),
+  label: z.string().min(1),
+  ui: nodeUiSchema.optional(),
+  config: joinConfigSchema,
+});
+
 export const nodeDataSchema = z.discriminatedUnion("kind", [
   startNodeDataSchema,
   endNodeDataSchema,
@@ -219,6 +275,8 @@ export const nodeDataSchema = z.discriminatedUnion("kind", [
   toolNodeDataSchema,
   conditionNodeDataSchema,
   humanReviewNodeDataSchema,
+  forkNodeDataSchema,
+  joinNodeDataSchema,
 ]);
 
 const reactFlowPositionSchema = z.object({
@@ -263,9 +321,15 @@ export const branchEdgeDataSchema = z.object({
   branchKey: branchKeySchema,
 });
 
+export const laneEdgeDataSchema = z.object({
+  kind: z.literal("lane"),
+  laneKey: branchKeySchema,
+});
+
 export const edgeDataSchema = z.discriminatedUnion("kind", [
   normalEdgeDataSchema,
   branchEdgeDataSchema,
+  laneEdgeDataSchema,
 ]);
 
 export const workflowEdgeSchema = z.object({
@@ -310,6 +374,9 @@ export type AgentNodeConfig = z.infer<typeof agentConfigSchema>;
 export type ToolNodeConfig = z.infer<typeof toolConfigSchema>;
 export type ConditionNodeConfig = z.infer<typeof conditionConfigSchema>;
 export type HumanReviewNodeConfig = z.infer<typeof humanReviewConfigSchema>;
+export type ForkNodeConfig = z.infer<typeof forkConfigSchema>;
+export type JoinNodeConfig = z.infer<typeof joinConfigSchema>;
+export type ForkLaneConfig = z.infer<typeof forkLaneSchema>;
 export type ReviewFormField = z.infer<typeof reviewFormFieldSchema>;
 export type StartNodeConfig = z.infer<typeof startConfigSchema>;
 export type StartVariable = z.infer<typeof startVariableSchema>;
@@ -700,6 +767,10 @@ export function defaultConfigForKind(
           },
         ],
       };
+    case "fork":
+      return { lanes: defaultForkLanes() };
+    case "join":
+      return { wait: DEFAULT_JOIN_WAIT };
   }
 }
 
@@ -738,6 +809,10 @@ export function createNodeData(
         label: resolvedLabel,
         config: config as HumanReviewNodeConfig,
       };
+    case "fork":
+      return { kind, label: resolvedLabel, config: config as ForkNodeConfig };
+    case "join":
+      return { kind, label: resolvedLabel, config: config as JoinNodeConfig };
   }
 }
 
