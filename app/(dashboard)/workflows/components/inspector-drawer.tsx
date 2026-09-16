@@ -33,6 +33,11 @@ import {
   rowsFromInputMap,
   type InputMapRow,
 } from "../lib/input-map";
+import {
+  isParallelInteriorNode,
+  parallelInputMapSourceWarning,
+  parallelOutputKeyWarning,
+} from "../lib/parallel-inspector";
 import type { EditorSelection } from "../types";
 
 /**
@@ -147,11 +152,14 @@ function InputMapEditor({
   onChange,
   targetLabel,
   targetPlaceholder,
+  inParallelRegion = false,
 }: {
   value: Record<string, string> | undefined;
   onChange: (next: Record<string, string> | undefined) => void;
   targetLabel: string;
   targetPlaceholder: string;
+  /** 并行区内不读共享对话 / lastAgentText，空态和路径提示要换口径。 */
+  inParallelRegion?: boolean;
 }) {
   const [rows, setRows] = useState<InputMapRow[]>(() =>
     rowsFromInputMap(value),
@@ -189,7 +197,9 @@ function InputMapEditor({
         <div>
           <div className="text-sm font-medium text-foreground">输入映射</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            从共享 state 取值并注入本节点。
+            {inParallelRegion
+              ? "只从 state.vars 取值。并行区不写入 lastAgentText，不要映射 state.lastAgentText。"
+              : "从共享 state 取值并注入本节点。"}
           </p>
         </div>
         <Button
@@ -214,7 +224,9 @@ function InputMapEditor({
 
       {rows.length === 0 ? (
         <div className="rounded-lg border border-dashed border-primary/20 px-3 py-4 text-center text-xs text-muted-foreground">
-          未配置映射，节点只使用默认上下文。
+          {inParallelRegion
+            ? "未配置映射。并行区不注入共享对话，请用 state.vars 取值。"
+            : "未配置映射，节点只使用默认上下文。"}
         </div>
       ) : (
         <div className="space-y-2">
@@ -230,6 +242,9 @@ function InputMapEditor({
             const targetInvalid = Boolean(target) && !isValidInputMapTarget(target);
             const sourceSuspicious = Boolean(source) && !isLikelyStatePath(source);
             const duplicated = Boolean(target) && duplicates.has(target);
+            const lastAgentTextWarning = inParallelRegion
+              ? parallelInputMapSourceWarning(source)
+              : null;
 
             return (
               <div
@@ -251,7 +266,7 @@ function InputMapEditor({
                     value={row.source}
                     placeholder="state.vars.order_id"
                     aria-label="state 取值路径"
-                    aria-invalid={sourceSuspicious}
+                    aria-invalid={sourceSuspicious || Boolean(lastAgentTextWarning)}
                     className="h-8 font-mono text-xs"
                     onChange={(event) =>
                       patchRow(row.id, { source: event.target.value })
@@ -270,11 +285,14 @@ function InputMapEditor({
                   </Button>
                 </div>
 
-                {targetInvalid || duplicated || sourceSuspicious ? (
+                {targetInvalid ||
+                duplicated ||
+                lastAgentTextWarning ||
+                sourceSuspicious ? (
                   <div
                     className={cn(
                       "mt-1.5 text-[10px] leading-relaxed",
-                      targetInvalid || duplicated
+                      targetInvalid || duplicated || lastAgentTextWarning
                         ? "text-destructive"
                         : "text-amber-700",
                     )}
@@ -283,7 +301,9 @@ function InputMapEditor({
                       ? "目标键只能使用字母、数字、下划线，且不能以数字开头；修正前不会写入 DSL。"
                       : duplicated
                         ? "目标键重复；当前 DSL 只会保留最后一条。"
-                        : "路径通常应以 state. 开头；当前仅提示，不阻止保存。"}
+                        : lastAgentTextWarning
+                          ? lastAgentTextWarning
+                          : "路径通常应以 state. 开头；当前仅提示，不阻止保存。"}
                   </div>
                 ) : null}
               </div>
@@ -457,13 +477,26 @@ function AgentForm({
   data,
   agents,
   onChange,
+  inParallelRegion,
 }: {
   data: Extract<WorkflowNodeData, { kind: "agent" }>;
   agents: RefOption[];
   onChange: (next: WorkflowNodeData) => void;
+  inParallelRegion: boolean;
 }) {
+  // messagesMode 不进抽屉：区内 isolated、区外 inherit，由编译器按拓扑强制，用户不能覆盖。
+  const outputWarning = inParallelRegion
+    ? parallelOutputKeyWarning(data.config.outputKey)
+    : null;
+
   return (
     <>
+      {inParallelRegion ? (
+        <p className="rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
+          此节点在并行通道内：不读写共享对话和 lastAgentText。请用输入映射读
+          state.vars，并用独立输出键写回。
+        </p>
+      ) : null}
       <Field
         label="绑定智能体"
         htmlFor="node-agent"
@@ -495,6 +528,7 @@ function AgentForm({
         value={data.config.inputMap}
         targetLabel="注入变量名"
         targetPlaceholder="order"
+        inParallelRegion={inParallelRegion}
         onChange={(inputMap) =>
           onChange({
             ...data,
@@ -505,11 +539,16 @@ function AgentForm({
       <Field
         label="输出键"
         htmlFor="node-agent-output"
-        hint="模型输出写进共享 state 的哪个键，下游条件表达式据此取值。"
+        hint={
+          inParallelRegion
+            ? "写入 state.vars 的键。下游只能通过 inputMap 读这里，不能再依赖 lastAgentText。"
+            : "模型输出写进共享 state 的哪个键，下游条件表达式据此取值。"
+        }
       >
         <Input
           id="node-agent-output"
           value={data.config.outputKey}
+          aria-invalid={Boolean(outputWarning)}
           onChange={(e) =>
             onChange({
               ...data,
@@ -517,6 +556,11 @@ function AgentForm({
             })
           }
         />
+        {outputWarning ? (
+          <p className="text-[11px] leading-relaxed text-destructive">
+            {outputWarning}
+          </p>
+        ) : null}
       </Field>
     </>
   );
@@ -526,13 +570,25 @@ function ToolForm({
   data,
   tools,
   onChange,
+  inParallelRegion,
 }: {
   data: Extract<WorkflowNodeData, { kind: "tool" }>;
   tools: RefOption[];
   onChange: (next: WorkflowNodeData) => void;
+  inParallelRegion: boolean;
 }) {
+  const outputWarning = inParallelRegion
+    ? parallelOutputKeyWarning(data.config.outputKey)
+    : null;
+
   return (
     <>
+      {inParallelRegion ? (
+        <p className="rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
+          此节点在并行通道内：不要把输出键设为 lastAgentText，也不要在输入映射里读
+          state.lastAgentText。
+        </p>
+      ) : null}
       <Field label="绑定工具" htmlFor="node-tool">
         <select
           id="node-tool"
@@ -557,6 +613,7 @@ function ToolForm({
         value={data.config.inputMap}
         targetLabel="工具参数名"
         targetPlaceholder="order_id"
+        inParallelRegion={inParallelRegion}
         onChange={(inputMap) =>
           onChange({
             ...data,
@@ -564,10 +621,19 @@ function ToolForm({
           })
         }
       />
-      <Field label="输出键" htmlFor="node-tool-output" hint="留空则不写回 state。">
+      <Field
+        label="输出键"
+        htmlFor="node-tool-output"
+        hint={
+          inParallelRegion
+            ? "留空则不写回。若写回，必须是独立的 vars key，不能用 lastAgentText。"
+            : "留空则不写回 state。"
+        }
+      >
         <Input
           id="node-tool-output"
           value={data.config.outputKey ?? ""}
+          aria-invalid={Boolean(outputWarning)}
           onChange={(e) =>
             onChange({
               ...data,
@@ -578,6 +644,11 @@ function ToolForm({
             })
           }
         />
+        {outputWarning ? (
+          <p className="text-[11px] leading-relaxed text-destructive">
+            {outputWarning}
+          </p>
+        ) : null}
       </Field>
     </>
   );
@@ -1266,6 +1337,7 @@ export function InspectorDrawer({
                 key={node.id}
                 data={node.data}
                 agents={agents}
+                inParallelRegion={isParallelInteriorNode(doc, node.id)}
                 onChange={updateData}
               />
             ) : null}
@@ -1274,6 +1346,7 @@ export function InspectorDrawer({
                 key={node.id}
                 data={node.data}
                 tools={tools}
+                inParallelRegion={isParallelInteriorNode(doc, node.id)}
                 onChange={updateData}
               />
             ) : null}

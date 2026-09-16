@@ -1,4 +1,7 @@
-import type { FlowRunInterruptPayload, FlowRunStatus } from "@/lib/workflow-dsl/tables";
+import type {
+  FlowRunInterruptPayload,
+  FlowRunStatus,
+} from "@/lib/workflow-dsl/tables";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 export type ReducedRunEvents = {
@@ -12,8 +15,15 @@ export type ReducedRunEvents = {
 /**
  * Last-Event-ID 已见过的帧直接丢，避免重连把同一段 token 再灌进 store 撑爆内存。
  */
-export function shouldSkipSseEvent(lastEventId: number, incomingId: unknown): boolean {
-  if (typeof incomingId !== "number" || !Number.isInteger(incomingId) || incomingId < 1) {
+export function shouldSkipSseEvent(
+  lastEventId: number,
+  incomingId: unknown
+): boolean {
+  if (
+    typeof incomingId !== "number" ||
+    !Number.isInteger(incomingId) ||
+    incomingId < 1
+  ) {
     return false;
   }
   if (typeof lastEventId !== "number" || !Number.isFinite(lastEventId)) {
@@ -27,7 +37,7 @@ export function shouldSkipSseEvent(lastEventId: number, incomingId: unknown): bo
  */
 export function appendTimelineEvent(
   events: WorkflowSseEvent[],
-  event: WorkflowSseEvent,
+  event: WorkflowSseEvent
 ): WorkflowSseEvent[] {
   if (!Array.isArray(events)) return [event];
   if (event.type !== "token") return [...events, event];
@@ -51,7 +61,7 @@ export function appendTimelineEvent(
 
 /**
  * 把 SSE / 落库事件压成控制台要的派生态。
- * 乱序 tool_end、interrupt 之后还来 token 都要吞掉而不是把 status 改回去。
+ * 终态不可回退：一旦出现 interrupted / completed / failed / cancelled（或 interrupt / error 推出来的终态），后面的 run_status、node_start 不能再把 status 改回去。
  */
 export function reduceRunEvents(events: WorkflowSseEvent[]): ReducedRunEvents {
   const result: ReducedRunEvents = {
@@ -63,12 +73,17 @@ export function reduceRunEvents(events: WorkflowSseEvent[]): ReducedRunEvents {
   };
 
   let terminal: FlowRunStatus | null = null;
-  const openNodes: string[] = [];
+  const openNodes: string[] = []; // 还没 node_end 的节点列表
 
   for (const event of events) {
     switch (event.type) {
       case "run_status":
-        if (event.status === "interrupted" || event.status === "completed" || event.status === "failed" || event.status === "cancelled") {
+        if (
+          event.status === "interrupted" ||
+          event.status === "completed" ||
+          event.status === "failed" ||
+          event.status === "cancelled"
+        ) {
           terminal = event.status;
           result.status = event.status;
         } else if (!terminal) {

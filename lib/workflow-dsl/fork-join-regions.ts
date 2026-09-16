@@ -107,6 +107,18 @@ export function analyzeForkJoinRegions(
   return { regions, issues };
 }
 
+/**
+ * Fork–Join 之间的节点（不含两端）。
+ * 编译器用它强制 isolated；抽屉用同一份名单决定要不要警示 lastAgentText。
+ */
+export function regionInteriorNodeIds(doc: WorkflowDocument): Set<string> {
+  const ids = new Set<string>();
+  for (const region of analyzeForkJoinRegions(doc).regions) {
+    for (const id of region.interiorNodeIds) ids.add(id);
+  }
+  return ids;
+}
+
 function analyzeOneFork(
   doc: WorkflowDocument,
   fork: WorkflowNode,
@@ -399,7 +411,11 @@ function checkInteriorKindsAndFanIn(
   }
 }
 
-function referencesLastAgentText(path: string) {
+/**
+ * 识别对共享字段 `state.lastAgentText` 的引用。
+ * `state.vars.lastAgentText` 不算：那是 vars 里一个普通 key，和共享字段不是同一条通道。
+ */
+export function referencesLastAgentText(path: string) {
   const trimmed = path.trim();
   return (
     trimmed === LAST_AGENT_TEXT_PATH ||

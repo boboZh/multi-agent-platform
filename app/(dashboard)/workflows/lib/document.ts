@@ -75,7 +75,7 @@ export function nextEdgeId(existing: Iterable<string>): string {
 export function nextNodePosition(doc: WorkflowDocument): XY {
   if (doc.nodes.length === 0) return { x: 80, y: 40 };
   const lowest = doc.nodes.reduce((acc, node) =>
-    node.position.y > acc.position.y ? node : acc,
+    node.position.y > acc.position.y ? node : acc
   );
   return { x: lowest.position.x, y: lowest.position.y + 140 };
 }
@@ -84,11 +84,11 @@ export function nextNodePosition(doc: WorkflowDocument): XY {
 export function addNode(
   doc: WorkflowDocument,
   kind: NodeKind,
-  position: XY,
+  position: XY
 ): { doc: WorkflowDocument; nodeId: string } {
   const nodeId = nextNodeId(
     kind,
-    doc.nodes.map((node) => node.id),
+    doc.nodes.map((node) => node.id)
   );
   const node: WorkflowNode = {
     id: nodeId,
@@ -107,13 +107,13 @@ export function addNode(
  */
 export function removeNodes(
   doc: WorkflowDocument,
-  nodeIds: Iterable<string>,
+  nodeIds: Iterable<string>
 ): WorkflowDocument {
   const requested = new Set(nodeIds);
   const removable = new Set(
     doc.nodes
       .filter((node) => requested.has(node.id) && node.data.kind !== "start")
-      .map((node) => node.id),
+      .map((node) => node.id)
   );
   if (removable.size === 0) return doc;
 
@@ -121,14 +121,14 @@ export function removeNodes(
     ...doc,
     nodes: doc.nodes.filter((node) => !removable.has(node.id)),
     edges: doc.edges.filter(
-      (edge) => !removable.has(edge.source) && !removable.has(edge.target),
+      (edge) => !removable.has(edge.source) && !removable.has(edge.target)
     ),
   };
 }
 
 export function removeEdges(
   doc: WorkflowDocument,
-  edgeIds: Iterable<string>,
+  edgeIds: Iterable<string>
 ): WorkflowDocument {
   const removable = new Set(edgeIds);
   if (removable.size === 0) return doc;
@@ -153,7 +153,7 @@ export function removeEdges(
  */
 export function canConnect(
   doc: WorkflowDocument,
-  connection: CanvasConnection,
+  connection: CanvasConnection
 ): { ok: true } | { ok: false; reason: string } {
   const source = nodeById(doc, connection.source);
   const target = nodeById(doc, connection.target);
@@ -190,7 +190,7 @@ export function canConnect(
     (edge) =>
       edge.source === source.id &&
       edge.target === target.id &&
-      (edge.sourceHandle ?? null) === handle,
+      (edge.sourceHandle ?? null) === handle
   );
   if (duplicated) return { ok: false, reason: "这两个节点已经连过了。" };
 
@@ -211,8 +211,9 @@ export function canConnect(
  */
 export function connect(
   doc: WorkflowDocument,
-  connection: CanvasConnection,
+  connection: CanvasConnection
 ): DocumentResult {
+  console.log("connect", connection);
   const check = canConnect(doc, connection);
   if (!check.ok) return check;
 
@@ -221,7 +222,7 @@ export function connect(
 
   const kept = doc.edges.filter(
     (edge) =>
-      !(edge.source === source.id && (edge.sourceHandle ?? null) === handle),
+      !(edge.source === source.id && (edge.sourceHandle ?? null) === handle)
   );
 
   const data: WorkflowEdge["data"] =
@@ -246,12 +247,12 @@ export function connect(
 export function updateNode(
   doc: WorkflowDocument,
   nodeId: string,
-  updater: (data: WorkflowNodeData) => WorkflowNodeData,
+  updater: (data: WorkflowNodeData) => WorkflowNodeData
 ): WorkflowDocument {
   return {
     ...doc,
     nodes: doc.nodes.map((node) =>
-      node.id === nodeId ? { ...node, data: updater(node.data) } : node,
+      node.id === nodeId ? { ...node, data: updater(node.data) } : node
     ),
   };
 }
@@ -265,7 +266,7 @@ function conditionNode(doc: WorkflowDocument, nodeId: string) {
 /** 追加一个分支。key 用 branch_N 递增，保证符合 BRANCH_KEY_RE 且不与现有 key 撞。 */
 export function addConditionBranch(
   doc: WorkflowDocument,
-  nodeId: string,
+  nodeId: string
 ): DocumentResult {
   const node = conditionNode(doc, nodeId);
   if (!node || node.data.kind !== "condition") {
@@ -288,7 +289,7 @@ export function addConditionBranch(
               branches: [...data.config.branches, { key, label: key }],
             },
           }
-        : data,
+        : data
     ),
   };
 }
@@ -302,7 +303,7 @@ export function addConditionBranch(
 export function removeConditionBranch(
   doc: WorkflowDocument,
   nodeId: string,
-  key: string,
+  key: string
 ): DocumentResult {
   const node = conditionNode(doc, nodeId);
   if (!node || node.data.kind !== "condition") {
@@ -328,7 +329,7 @@ export function removeConditionBranch(
               defaultBranch === key ? remaining[0].key : defaultBranch,
           },
         }
-      : data,
+      : data
   );
 
   return {
@@ -337,7 +338,7 @@ export function removeConditionBranch(
       ...withBranches,
       edges: withBranches.edges.filter(
         (edge) =>
-          !(edge.source === nodeId && (edge.sourceHandle ?? null) === key),
+          !(edge.source === nodeId && (edge.sourceHandle ?? null) === key)
       ),
     },
   };
@@ -353,7 +354,7 @@ export function renameConditionBranch(
   doc: WorkflowDocument,
   nodeId: string,
   oldKey: string,
-  newKey: string,
+  newKey: string
 ): DocumentResult {
   const node = conditionNode(doc, nodeId);
   if (!node || node.data.kind !== "condition") {
@@ -361,7 +362,10 @@ export function renameConditionBranch(
   }
   if (oldKey === newKey) return { ok: true, doc };
   if (!BRANCH_KEY_RE.test(newKey)) {
-    return { ok: false, reason: "分支 key 只能是字母、数字、下划线，且不能以数字开头。" };
+    return {
+      ok: false,
+      reason: "分支 key 只能是字母、数字、下划线，且不能以数字开头。",
+    };
   }
   const { branches, defaultBranch } = node.data.config;
   if (!branches.some((branch) => branch.key === oldKey)) {
@@ -378,12 +382,12 @@ export function renameConditionBranch(
           config: {
             ...data.config,
             branches: data.config.branches.map((branch) =>
-              branch.key === oldKey ? { ...branch, key: newKey } : branch,
+              branch.key === oldKey ? { ...branch, key: newKey } : branch
             ),
             defaultBranch: defaultBranch === oldKey ? newKey : defaultBranch,
           },
         }
-      : data,
+      : data
   );
 
   return {
@@ -397,7 +401,7 @@ export function renameConditionBranch(
               sourceHandle: newKey,
               data: { kind: "branch", branchKey: newKey },
             }
-          : edge,
+          : edge
       ),
     },
   };
@@ -408,7 +412,7 @@ export function setConditionBranchLabel(
   doc: WorkflowDocument,
   nodeId: string,
   key: string,
-  label: string,
+  label: string
 ): WorkflowDocument {
   return updateNode(doc, nodeId, (data) =>
     data.kind === "condition"
@@ -417,11 +421,11 @@ export function setConditionBranchLabel(
           config: {
             ...data.config,
             branches: data.config.branches.map((branch) =>
-              branch.key === key ? { ...branch, label } : branch,
+              branch.key === key ? { ...branch, label } : branch
             ),
           },
         }
-      : data,
+      : data
   );
 }
 
@@ -437,7 +441,7 @@ function forkNode(doc: WorkflowDocument, nodeId: string) {
  */
 export function addForkLane(
   doc: WorkflowDocument,
-  nodeId: string,
+  nodeId: string
 ): DocumentResult {
   const node = forkNode(doc, nodeId);
   if (!node || node.data.kind !== "fork") {
@@ -460,13 +464,10 @@ export function addForkLane(
             ...data,
             config: {
               ...data.config,
-              lanes: [
-                ...data.config.lanes,
-                { key, label: `通道 ${index}` },
-              ],
+              lanes: [...data.config.lanes, { key, label: `通道 ${index}` }],
             },
           }
-        : data,
+        : data
     ),
   };
 }
@@ -478,7 +479,7 @@ export function addForkLane(
 export function removeForkLane(
   doc: WorkflowDocument,
   nodeId: string,
-  key: string,
+  key: string
 ): DocumentResult {
   const node = forkNode(doc, nodeId);
   if (!node || node.data.kind !== "fork") {
@@ -489,7 +490,10 @@ export function removeForkLane(
     return { ok: false, reason: `通道「${key}」不存在。` };
   }
   if (lanes.length <= MIN_FORK_LANES) {
-    return { ok: false, reason: `并行扇出至少需要保留 ${MIN_FORK_LANES} 条通道。` };
+    return {
+      ok: false,
+      reason: `并行扇出至少需要保留 ${MIN_FORK_LANES} 条通道。`,
+    };
   }
 
   const withLanes = updateNode(doc, nodeId, (data) =>
@@ -501,7 +505,7 @@ export function removeForkLane(
             lanes: data.config.lanes.filter((lane) => lane.key !== key),
           },
         }
-      : data,
+      : data
   );
 
   return {
@@ -510,7 +514,7 @@ export function removeForkLane(
       ...withLanes,
       edges: withLanes.edges.filter(
         (edge) =>
-          !(edge.source === nodeId && (edge.sourceHandle ?? null) === key),
+          !(edge.source === nodeId && (edge.sourceHandle ?? null) === key)
       ),
     },
   };
@@ -524,7 +528,7 @@ export function renameForkLane(
   doc: WorkflowDocument,
   nodeId: string,
   oldKey: string,
-  newKey: string,
+  newKey: string
 ): DocumentResult {
   const node = forkNode(doc, nodeId);
   if (!node || node.data.kind !== "fork") {
@@ -532,7 +536,10 @@ export function renameForkLane(
   }
   if (oldKey === newKey) return { ok: true, doc };
   if (!BRANCH_KEY_RE.test(newKey)) {
-    return { ok: false, reason: "通道 key 只能是字母、数字、下划线，且不能以数字开头。" };
+    return {
+      ok: false,
+      reason: "通道 key 只能是字母、数字、下划线，且不能以数字开头。",
+    };
   }
   const { lanes } = node.data.config;
   if (!lanes.some((lane) => lane.key === oldKey)) {
@@ -549,11 +556,11 @@ export function renameForkLane(
           config: {
             ...data.config,
             lanes: data.config.lanes.map((lane) =>
-              lane.key === oldKey ? { ...lane, key: newKey } : lane,
+              lane.key === oldKey ? { ...lane, key: newKey } : lane
             ),
           },
         }
-      : data,
+      : data
   );
 
   return {
@@ -567,7 +574,7 @@ export function renameForkLane(
               sourceHandle: newKey,
               data: { kind: "lane", laneKey: newKey },
             }
-          : edge,
+          : edge
       ),
     },
   };
@@ -578,7 +585,7 @@ export function setForkLaneLabel(
   doc: WorkflowDocument,
   nodeId: string,
   key: string,
-  label: string,
+  label: string
 ): WorkflowDocument {
   return updateNode(doc, nodeId, (data) =>
     data.kind === "fork"
@@ -587,11 +594,11 @@ export function setForkLaneLabel(
           config: {
             ...data.config,
             lanes: data.config.lanes.map((lane) =>
-              lane.key === key ? { ...lane, label } : lane,
+              lane.key === key ? { ...lane, label } : lane
             ),
           },
         }
-      : data,
+      : data
   );
 }
 
@@ -603,7 +610,7 @@ export function setForkLaneLabel(
  * 这里借 zod object 默认剥离未知键的行为洗一遍，顺带确认文档形状仍然合法。
  */
 export function sanitizeDocumentForSave(
-  doc: WorkflowDocument,
+  doc: WorkflowDocument
 ): { ok: true; doc: WorkflowDocument } | { ok: false; reason: string } {
   const parsed = workflowDocumentShapeSchema.safeParse(doc);
   if (!parsed.success) {

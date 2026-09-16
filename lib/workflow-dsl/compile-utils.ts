@@ -4,6 +4,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { analyzeForkJoinRegions } from "@/lib/workflow-dsl/fork-join-regions";
 import type { WorkflowDocument, WorkflowEdge } from "@/lib/workflow-dsl/schema";
 
+export { regionInteriorNodeIds } from "@/lib/workflow-dsl/fork-join-regions";
+
 /**
  * 编译器读到的运行时 state。
  * vars 用 reducer 做浅合并，所以节点只返回增量（`{ vars: { k: v } }`），不要把整个 vars 再铺回去，
@@ -311,14 +313,3 @@ export function collectStaticControlEdges(
  * inherit = 区外旧行为；isolated = 并行区内，避免 N 路交错 messages / 字典序 lastAgentText。
  */
 export type AgentMessagesMode = "inherit" | "isolated";
-
-/**
- * Fork–Join 之间的节点（不含两端）。编译器用它决定 isolated，校验层的 interior 是同一份分析。
- */
-export function regionInteriorNodeIds(doc: WorkflowDocument): Set<string> {
-  const ids = new Set<string>();
-  for (const region of analyzeForkJoinRegions(doc).regions) {
-    for (const id of region.interiorNodeIds) ids.add(id);
-  }
-  return ids;
-}
