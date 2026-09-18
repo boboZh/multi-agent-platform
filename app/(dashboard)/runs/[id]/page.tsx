@@ -119,12 +119,11 @@ export default function RunConsolePage({
       es.onmessage = (message) => {
         attempt = 0;
         try {
-          console.log(message);
           const parsed: unknown = JSON.parse(message.data);
+          console.log("es.onmessage", parsed);
           if (!isWorkflowSseEvent(parsed)) return;
           const eventId = Number.parseInt(message.lastEventId, 10);
           applyEvent(parsed, Number.isFinite(eventId) ? eventId : undefined);
-          // (parsed.type === "run_status" && parsed.status === "interrupted")
           if (parsed.type === "done") {
             stopped = true;
             es.close();
@@ -135,7 +134,7 @@ export default function RunConsolePage({
         }
       };
       es.onerror = (error) => {
-        console.error("es.onerror", error);
+        console.log("es.onerror", es, error);
         if (stopped) return;
         // CONNECTING：浏览器正在自带重连，不要 close 再 new，否则 /events 编译请求会叠成进程风暴。
         if (es.readyState === EventSource.CONNECTING) {

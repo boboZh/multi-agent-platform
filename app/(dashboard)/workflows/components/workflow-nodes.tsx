@@ -1,7 +1,12 @@
 "use client";
 
-import { createContext, memo, useContext } from "react";
-import { Handle, Position, type NodeProps } from "reactflow";
+import { createContext, memo, useContext, useLayoutEffect } from "react";
+import {
+  Handle,
+  Position,
+  useUpdateNodeInternals,
+  type NodeProps,
+} from "reactflow";
 import {
   Bot,
   CircleStop,
@@ -38,7 +43,7 @@ export const NodeIssuesContext = createContext<ReadonlySet<string>>(new Set());
  * 但 DSL 里只存 UUID，名字得由编辑器查表后从外面传进来。
  */
 export const NodeRefNamesContext = createContext<ReadonlyMap<string, string>>(
-  new Map(),
+  new Map()
 );
 
 /**
@@ -46,14 +51,14 @@ export const NodeRefNamesContext = createContext<ReadonlyMap<string, string>>(
  * 不塞进 node.data：那是 DSL，运行态一写进去会和编辑器文档搅在一起。
  */
 export type RunNodeHighlight = {
-  currentNodeId: string | null;
+  currentNodeIds: ReadonlySet<string>;
   doneNodeIds: ReadonlySet<string>;
   failedNodeId: string | null;
   interruptedNodeId: string | null;
 };
 
 export const RunHighlightContext = createContext<RunNodeHighlight>({
-  currentNodeId: null,
+  currentNodeIds: new Set(),
   doneNodeIds: new Set(),
   failedNodeId: null,
   interruptedNodeId: null,
@@ -76,7 +81,7 @@ const HANDLE_CLASS =
 /** 节点卡上的一行摘要：让用户不点开抽屉也能看出这个节点配没配全。 */
 function summaryOf(
   data: WorkflowNodeData,
-  refNames: ReadonlyMap<string, string>,
+  refNames: ReadonlyMap<string, string>
 ): { text: string; muted: boolean } {
   switch (data.kind) {
     case "agent": {
@@ -121,12 +126,17 @@ function summaryOf(
   }
 }
 
-function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData>) {
+function WorkflowNodeCardImpl({
+  id,
+  data,
+  selected,
+}: NodeProps<WorkflowNodeData>) {
   const issues = useContext(NodeIssuesContext);
   const refNames = useContext(NodeRefNamesContext);
   const highlight = useContext(RunHighlightContext);
+  const updateNodeInternals = useUpdateNodeInternals();
   const hasIssue = issues.has(id);
-  const isCurrent = highlight.currentNodeId === id;
+  const isCurrent = highlight.currentNodeIds.has(id);
   const isDone = highlight.doneNodeIds.has(id);
   const isFailed = highlight.failedNodeId === id;
   const isInterrupted = highlight.interruptedNodeId === id;
@@ -142,6 +152,15 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
       : data.kind === "fork"
         ? data.config.lanes
         : [];
+  const namedSourceSignature = namedSources.map((port) => port.key).join("\0");
+
+  // React Flow 只在节点首次挂载时量 handle 的位置和 id。
+  // 之后增删通道/分支只改 DOM，内部表还是旧的：已有边对着旧坐标（错位），
+  // 新 handle 根本没登记（拖不出线）。layout 后再通知一次重测。
+  useLayoutEffect(() => {
+    if (!namedSourceSignature) return;
+    updateNodeInternals(id);
+  }, [id, namedSourceSignature, updateNodeInternals]);
 
   return (
     <div
@@ -150,11 +169,13 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
         selected
           ? "border-primary ring-2 ring-primary/30"
           : "border-foreground/10",
-        hasIssue && !selected && "border-destructive/60 ring-2 ring-destructive/20",
+        hasIssue &&
+          !selected &&
+          "border-destructive/60 ring-2 ring-destructive/20",
         isCurrent && "animate-pulse border-blue-500 ring-2 ring-blue-400/40",
         isDone && !isCurrent && "border-emerald-500/70",
         isFailed && "border-destructive ring-2 ring-destructive/30",
-        isInterrupted && "border-amber-500 ring-2 ring-amber-400/40",
+        isInterrupted && "border-amber-500 ring-2 ring-amber-400/40"
       )}
     >
       {spec.targets !== 0 ? (
@@ -183,7 +204,9 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
         <div
           className={cn(
             "mt-2 truncate rounded-md bg-muted/60 px-2 py-1 text-[11px]",
-            summary.muted ? "text-muted-foreground italic" : "text-foreground/80",
+            summary.muted
+              ? "text-muted-foreground italic"
+              : "text-foreground/80"
           )}
           title={summary.text}
         >
@@ -207,7 +230,9 @@ function WorkflowNodeCardImpl({ id, data, selected }: NodeProps<WorkflowNodeData
               id={port.key}
               type="source"
               position={Position.Bottom}
-              style={{ left: `${((index + 1) / (namedSources.length + 1)) * 100}%` }}
+              style={{
+                left: `${((index + 1) / (namedSources.length + 1)) * 100}%`,
+              }}
               className={HANDLE_CLASS}
             />
           ))}

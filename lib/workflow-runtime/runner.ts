@@ -26,6 +26,13 @@ import {
   patchFlowRun,
 } from "@/lib/workflow-runtime/persist";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
+import { openEngineEventLog } from "@/lib/workflow-runtime/engine-event-log";
+import {
+  isDslNodeName,
+  nodeIdFromStreamMetadata,
+  pickFailedTaskName,
+} from "@/lib/workflow-runtime/stream-attribution";
+import type { RetrySnapshot } from "@/lib/workflow-runtime/retry";
 
 export { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 
@@ -89,8 +96,8 @@ function graphInputFromStart(input: {
   };
 }
 
-function isUserNode(name: string | undefined, nodeIds: Set<string>) {
-  return Boolean(name && nodeIds.has(name));
+function snapshotCurrentNodeIds(open: Set<string>): string[] {
+  return [...open];
 }
 
 function textFromChainOutput(output: unknown): string | undefined {
@@ -132,13 +139,17 @@ export async function executeWorkflowRun(options: {
   const emit = (event: WorkflowSseEvent) =>
     emitAndPersist(run.id, event, onEvent);
 
-  let currentNodeId: string | undefined;
+  const currentNodeIds = new Set<string>();
+  let lastFailedNodeId: string | undefined;
   await patchFlowRun(run.id, {
     status: "running",
     error: null,
     interrupt_payload: null,
   });
-  await emit({ type: "run_status", status: "running" });
+  await emit({
+    type: "run_status",
+    status: "running",
+  });
 
   try {
     const app = await compilePublished(dsl, userId);
@@ -161,49 +172,68 @@ export async function executeWorkflowRun(options: {
       configurable,
     });
 
-    for await (const raw of eventStream) {
-      const name = typeof raw.name === "string" ? raw.name : undefined;
-      if (raw.event === "on_chain_start" && isUserNode(name, nodeIds)) {
-        currentNodeId = name;
-        await emit({ type: "node_start", nodeId: name as string });
-        await emit({
-          type: "run_status",
-          status: "running",
-          currentNodeId: name,
-        });
-      }
-      if (raw.event === "on_chain_end" && isUserNode(name, nodeIds)) {
-        await emit({
-          type: "node_end",
-          nodeId: name as string,
-          text: textFromChainOutput(raw.data?.output),
-        });
-      }
+    // 每次 execute 单独 dump 一份 streamEvents，resume/retry 不覆盖上一轮，方便对照并行分支。
+    const eventLog = await openEngineEventLog({
+      runId: run.id,
+      threadId: run.thread_id,
+      commandKind: command.kind,
+    });
+    let eventIndex = 0;
+    try {
+      for await (const raw of eventStream) {
+        await eventLog?.write(eventIndex, raw);
+        eventIndex += 1;
+        const name = typeof raw.name === "string" ? raw.name : undefined;
+        const eventNodeId = nodeIdFromStreamMetadata(raw.metadata, nodeIds);
 
-      const mapped = mapStreamEvent(raw);
-      if (mapped?.type === "token") {
-        await emit({
-          type: "token",
-          nodeId: currentNodeId,
-          content: mapped.content,
-        });
-      } else if (mapped?.type === "tool_start") {
-        await emit({
-          type: "tool_start",
-          nodeId: currentNodeId,
-          name: mapped.name,
-          input: mapped.input,
-          runId: mapped.runId,
-        });
-      } else if (mapped?.type === "tool_end") {
-        await emit({
-          type: "tool_end",
-          nodeId: currentNodeId,
-          name: mapped.name,
-          output: mapped.output,
-          runId: mapped.runId,
-        });
+        if (raw.event === "on_chain_start" && isDslNodeName(name, nodeIds)) {
+          currentNodeIds.add(name as string);
+          await emit({
+        type: "node_start",
+        nodeId: name as string,
+        currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
+      });
+        }
+        if (raw.event === "on_chain_end" && isDslNodeName(name, nodeIds)) {
+          currentNodeIds.delete(name as string);
+          await emit({
+            type: "node_end",
+            nodeId: name as string,
+            text: textFromChainOutput(raw.data?.output),
+            currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
+          });
+        }
+        if (raw.event === "on_chain_error" && isDslNodeName(name, nodeIds)) {
+          lastFailedNodeId = name;
+        }
+
+        const mapped = mapStreamEvent(raw);
+        if (mapped?.type === "token") {
+          await emit({
+            type: "token",
+            nodeId: eventNodeId,
+            content: mapped.content,
+          });
+        } else if (mapped?.type === "tool_start") {
+          await emit({
+            type: "tool_start",
+            nodeId: eventNodeId,
+            name: mapped.name,
+            input: mapped.input,
+            runId: mapped.runId,
+          });
+        } else if (mapped?.type === "tool_end") {
+          await emit({
+            type: "tool_end",
+            nodeId: eventNodeId,
+            name: mapped.name,
+            output: mapped.output,
+            runId: mapped.runId,
+          });
+        }
       }
+    } finally {
+      await eventLog?.close();
     }
 
     const state = await app.getState({
@@ -221,9 +251,7 @@ export async function executeWorkflowRun(options: {
       await emit({
         type: "run_status",
         status: "interrupted",
-        currentNodeId: interrupt.nodeId,
       });
-      // await emit({ type: "done" });
       return next;
     }
 
@@ -255,9 +283,7 @@ export async function executeWorkflowRun(options: {
         await emit({
           type: "run_status",
           status: "interrupted",
-          currentNodeId: payload.nodeId,
         });
-        // await emit({ type: "done" });
         return next;
       }
     }
@@ -267,8 +293,32 @@ export async function executeWorkflowRun(options: {
       error: message,
       interrupt_payload: null,
     });
-    await emit({ type: "error", message, nodeId: currentNodeId });
-    await emit({ type: "run_status", status: "failed", currentNodeId });
+
+    let failedNodeId = lastFailedNodeId;
+    if (!failedNodeId) {
+      try {
+        const app = await compilePublished(dsl, userId);
+        const snapshots: RetrySnapshot[] = [];
+        for await (const snap of app.getStateHistory({
+          configurable: { thread_id: run.thread_id },
+        })) {
+          snapshots.push(snap);
+        }
+        failedNodeId = pickFailedTaskName(snapshots, currentNodeIds);
+      } catch {
+        // history 拉失败时仍要发出 error 帧，只是没有节点归属
+      }
+    }
+
+    await emit({
+      type: "error",
+      message,
+      nodeId: failedNodeId,
+    });
+    await emit({
+      type: "run_status",
+      status: "failed",
+    });
     await emit({ type: "done" });
     return next;
   }

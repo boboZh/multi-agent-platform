@@ -3,14 +3,14 @@ import type { ReducedRunEvents } from "@/app/(dashboard)/runs/lib/event-reducer"
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 export type RunHighlight = {
-  currentNodeId: string | null;
+  currentNodeIds: ReadonlySet<string>;
   doneNodeIds: ReadonlySet<string>;
   failedNodeId: string | null;
   interruptedNodeId: string | null;
 };
 
 const EMPTY: RunHighlight = {
-  currentNodeId: null,
+  currentNodeIds: new Set(),
   doneNodeIds: new Set(),
   failedNodeId: null,
   interruptedNodeId: null,
@@ -24,39 +24,48 @@ function doneFromEvents(events: WorkflowSseEvent[]) {
   return done;
 }
 
+function asIdSet(ids: string[] | undefined): Set<string> {
+  return new Set((ids ?? []).filter((id) => typeof id === "string" && id.length > 0));
+}
+
 /**
  * 画布高亮只看 status + 已压过的事件，禁止组件里再手写一套。
+ * 正在跑的节点只认 currentNodeIds：串行 size=1、并行 size=N，id 命中即脉冲。
  */
 export function deriveHighlight(
   status: FlowRunStatus | null | undefined,
-  reduced: ReducedRunEvents,
+  reduced: ReducedRunEvents
 ): RunHighlight {
   const doneNodeIds = doneFromEvents(reduced.events);
   if (!status) return { ...EMPTY, doneNodeIds };
 
   if (status === "interrupted") {
-    const interruptedNodeId =
-      reduced.interrupt?.nodeId ?? reduced.currentNodeId ?? null;
     return {
-      currentNodeId: null,
+      currentNodeIds: new Set(),
       doneNodeIds,
       failedNodeId: null,
-      interruptedNodeId,
+      interruptedNodeId: reduced.interrupt?.nodeId ?? null,
     };
   }
 
   if (status === "failed") {
+    const open = reduced.currentNodeIds;
+    const failedNodeId =
+      reduced.lastError?.nodeId ||
+      reduced.failedNodeId ||
+      (open.length === 1 ? open[0]! : null) ||
+      null;
     return {
-      currentNodeId: null,
+      currentNodeIds: new Set(),
       doneNodeIds,
-      failedNodeId: reduced.lastError?.nodeId ?? reduced.currentNodeId ?? null,
+      failedNodeId,
       interruptedNodeId: null,
     };
   }
 
   if (status === "running" || status === "pending") {
     return {
-      currentNodeId: reduced.currentNodeId,
+      currentNodeIds: asIdSet(reduced.currentNodeIds),
       doneNodeIds,
       failedNodeId: null,
       interruptedNodeId: null,
@@ -64,7 +73,7 @@ export function deriveHighlight(
   }
 
   return {
-    currentNodeId: null,
+    currentNodeIds: new Set(),
     doneNodeIds,
     failedNodeId: null,
     interruptedNodeId: null,

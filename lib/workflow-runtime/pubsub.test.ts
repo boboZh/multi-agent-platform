@@ -51,7 +51,7 @@ describe("parsePublishedSse", () => {
 describe("selectSseAfter", () => {
   const rows: BufferedSseEvent[] = [
     { id: 3, event: { type: "token", content: "c" } },
-    { id: 1, event: { type: "node_start", nodeId: "a" } },
+    { id: 1, event: { type: "node_start", nodeId: "a", currentNodeIds: ["a"] } },
     { id: 2, event: { type: "token", content: "b" } },
   ];
 
