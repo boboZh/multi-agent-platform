@@ -47,6 +47,23 @@ export type ForkJoinAnalysis = {
 
 const LAST_AGENT_TEXT_PATH = "state.lastAgentText";
 
+/**
+ * 并行区写入 vars 的 key：Agent/Tool 的 outputKey 与 Assign 的 sets[].key 共用冲突表。
+ * 两路同时写同一个槽时 reducer 后写覆盖前写，结果取决于节点 id 字典序。
+ */
+export function regionWriteKeys(node: WorkflowNode): string[] {
+  if (node.data.kind === "agent") {
+    return [node.data.config.outputKey];
+  }
+  if (node.data.kind === "tool" && node.data.config.outputKey) {
+    return [node.data.config.outputKey];
+  }
+  if (node.data.kind === "assign") {
+    return node.data.config.sets.map((item) => item.key);
+  }
+  return [];
+}
+
 function outgoing(edges: WorkflowEdge[], nodeId: string) {
   return edges.filter((edge) => edge.source === nodeId);
 }
@@ -395,9 +412,13 @@ function checkInteriorKindsAndFanIn(
   for (const id of interior) {
     const node = nodeById.get(id);
     if (!node) continue;
-    if (node.data.kind !== "agent" && node.data.kind !== "tool") {
+    if (
+      node.data.kind !== "agent" &&
+      node.data.kind !== "tool" &&
+      node.data.kind !== "assign"
+    ) {
       issues.push({
-        message: "并行通道内只允许智能体或工具节点",
+        message: "并行通道内只允许智能体、工具或赋值节点",
         nodeId: id,
       });
     }
@@ -441,28 +462,30 @@ export function collectRegionWriteIssues(
       const node = nodeById.get(id);
       if (!node) continue;
 
-      if (node.data.kind === "agent" || node.data.kind === "tool") {
-        const outputKey = node.data.config.outputKey;
-        if (node.data.kind === "agent" || outputKey) {
-          const key = outputKey ?? DEFAULT_AGENT_OUTPUT_KEY;
-          if (key === DEFAULT_AGENT_OUTPUT_KEY) {
-            issues.push({
-              message:
-                "并行区内节点不能使用默认 outputKey lastAgentText，须写入独立的 vars key",
-              nodeId: id,
-            });
-          }
-          const previous = seenKeys.get(key);
-          if (previous) {
-            issues.push({
-              message: `并行区内 outputKey「${key}」冲突（${previous} 与 ${id}）`,
-              nodeId: id,
-            });
-          } else {
-            seenKeys.set(key, id);
-          }
+      const writeKeys = regionWriteKeys(node);
+      for (const key of writeKeys) {
+        if (
+          (node.data.kind === "agent" || node.data.kind === "tool") &&
+          key === DEFAULT_AGENT_OUTPUT_KEY
+        ) {
+          issues.push({
+            message:
+              "并行区内节点不能使用默认 outputKey lastAgentText，须写入独立的 vars key",
+            nodeId: id,
+          });
         }
+        const previous = seenKeys.get(key);
+        if (previous) {
+          issues.push({
+            message: `并行区内 outputKey「${key}」冲突（${previous} 与 ${id}）`,
+            nodeId: id,
+          });
+        } else {
+          seenKeys.set(key, id);
+        }
+      }
 
+      if (node.data.kind === "agent" || node.data.kind === "tool") {
         const inputMap = node.data.config.inputMap;
         if (inputMap) {
           for (const [target, source] of Object.entries(inputMap)) {

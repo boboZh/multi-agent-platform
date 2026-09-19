@@ -10,6 +10,7 @@ import {
 import {
   Bot,
   CircleStop,
+  Equal,
   GitBranch,
   GitFork,
   Merge,
@@ -73,6 +74,7 @@ const KIND_ICONS: Record<NodeKind, LucideIcon> = {
   human_review: UserCheck,
   fork: GitFork,
   join: Merge,
+  assign: Equal,
 };
 
 const HANDLE_CLASS =
@@ -121,6 +123,12 @@ function summaryOf(
       };
     case "join":
       return { text: "等待全部完成", muted: false };
+    case "assign": {
+      const count = data.config.sets.length;
+      return count === 0
+        ? { text: "未配置赋值", muted: true }
+        : { text: `${count} 条赋值`, muted: false };
+    }
     case "end":
       return { text: "", muted: true };
   }
@@ -261,4 +269,5 @@ export const workflowNodeTypes = {
   interruptNode: WorkflowNodeCard,
   forkNode: WorkflowNodeCard,
   joinNode: WorkflowNodeCard,
+  assignNode: WorkflowNodeCard,
 };

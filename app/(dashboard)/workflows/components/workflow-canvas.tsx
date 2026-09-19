@@ -84,9 +84,9 @@ function WorkflowCanvasInner({
   const rfNodes = useMemo<Node<WorkflowNodeData>[]>(
     () =>
       doc.nodes.map((node) =>
-        node.data.kind === "start" ? { ...node, deletable: false } : node,
+        node.data.kind === "start" ? { ...node, deletable: false } : node
       ),
-    [doc.nodes],
+    [doc.nodes]
   );
 
   const rfEdges = useMemo<Edge[]>(
@@ -101,7 +101,7 @@ function WorkflowCanvasInner({
               : undefined,
         animated: edge.data.kind === "branch" || edge.data.kind === "lane",
       })),
-    [doc.edges],
+    [doc.edges]
   );
 
   /**
@@ -114,18 +114,19 @@ function WorkflowCanvasInner({
    */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      console.log("handleNodesChange", changes);
       const survivable = changes.filter((change) => change.type !== "remove");
       if (survivable.length === 0) return;
       const transient = survivable.every(
-        (change) => change.type === "select" || change.type === "dimensions",
+        (change) => change.type === "select" || change.type === "dimensions"
       );
       const next = applyNodeChanges(survivable, rfNodes);
       onDocChange(
         { ...doc, nodes: next as WorkflowDocument["nodes"] },
-        { transient },
+        { transient }
       );
     },
-    [doc, rfNodes, onDocChange],
+    [doc, rfNodes, onDocChange]
   );
 
   const handleEdgesChange = useCallback(
@@ -136,10 +137,10 @@ function WorkflowCanvasInner({
       const next = applyEdgeChanges(survivable, rfEdges);
       onDocChange(
         { ...doc, edges: next as WorkflowDocument["edges"] },
-        { transient },
+        { transient }
       );
     },
-    [doc, rfEdges, onDocChange],
+    [doc, rfEdges, onDocChange]
   );
 
   const handleNodesDelete = useCallback(
@@ -147,12 +148,12 @@ function WorkflowCanvasInner({
       onDocChange(
         removeNodes(
           doc,
-          deleted.map((node) => node.id),
-        ),
+          deleted.map((node) => node.id)
+        )
       );
       onSelectionChange(null);
     },
-    [doc, onDocChange, onSelectionChange],
+    [doc, onDocChange, onSelectionChange]
   );
 
   const handleEdgesDelete = useCallback(
@@ -160,12 +161,12 @@ function WorkflowCanvasInner({
       onDocChange(
         removeEdges(
           doc,
-          deleted.map((edge) => edge.id),
-        ),
+          deleted.map((edge) => edge.id)
+        )
       );
       onSelectionChange(null);
     },
-    [doc, onDocChange, onSelectionChange],
+    [doc, onDocChange, onSelectionChange]
   );
 
   const handleConnect = useCallback(
@@ -178,13 +179,13 @@ function WorkflowCanvasInner({
       onError(null);
       onDocChange(result.doc);
     },
-    [doc, onDocChange, onError],
+    [doc, onDocChange, onError]
   );
 
   /** 拖拽过程中实时判定，非法连接直接不让落，省得连上再弹错误。 */
   const handleIsValidConnection = useCallback(
     (connection: Connection) => canConnect(doc, connection).ok,
-    [doc],
+    [doc]
   );
 
   const handleDrop = useCallback(
@@ -198,7 +199,7 @@ function WorkflowCanvasInner({
       });
       onAddNode(kind, position);
     },
-    [screenToFlowPosition, onAddNode],
+    [screenToFlowPosition, onAddNode]
   );
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -225,7 +226,7 @@ function WorkflowCanvasInner({
           next.id === selection.id);
       if (!same) onSelectionChange(next);
     },
-    [selection, onSelectionChange],
+    [selection, onSelectionChange]
   );
 
   return (

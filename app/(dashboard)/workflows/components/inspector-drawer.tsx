@@ -1229,6 +1229,130 @@ function EdgeInspector({
   );
 }
 
+function AssignForm({
+  data,
+  inParallelRegion,
+  onChange,
+  onError,
+}: {
+  data: Extract<WorkflowNodeData, { kind: "assign" }>;
+  inParallelRegion: boolean;
+  onChange: (next: WorkflowNodeData) => void;
+  onError: (message: string | null) => void;
+}) {
+  const sets = data.config.sets;
+
+  function nextKey() {
+    const taken = new Set(sets.map((item) => item.key));
+    if (!taken.has("round")) return "round";
+    let index = 1;
+    while (taken.has(`key_${index}`)) index += 1;
+    return `key_${index}`;
+  }
+
+  function patchSet(
+    index: number,
+    patch: Partial<(typeof sets)[number]>,
+  ) {
+    onChange({
+      ...data,
+      config: {
+        sets: sets.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+      },
+    });
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium text-foreground">赋值列表</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            表达式与条件节点相同，只读 state.vars / state.lastAgentText。求值失败会让整节点失败，不会跳过某一行。
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          onClick={() => {
+            onError(null);
+            const key = nextKey();
+            onChange({
+              ...data,
+              config: {
+                sets: [
+                  ...sets,
+                  {
+                    key,
+                    expression:
+                      key === "round" ? "state.vars.round + 1" : "0",
+                  },
+                ],
+              },
+            });
+          }}
+        >
+          <Plus className="h-3 w-3" />
+          添加
+        </Button>
+      </div>
+      {inParallelRegion ? (
+        <p className="text-[11px] leading-relaxed text-amber-700">
+          并行区内 sets[].key 不能与同区智能体/工具的 outputKey 重复。
+        </p>
+      ) : null}
+      {sets.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-primary/20 px-3 py-4 text-center text-xs text-muted-foreground">
+          草稿可先空着，发布前至少要有一条赋值。
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sets.map((item, index) => (
+            <div
+              key={index}
+              className="space-y-1.5 rounded-lg border border-primary/15 bg-muted/40 p-2"
+            >
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={item.key}
+                  className="h-8 font-mono text-xs"
+                  aria-label="赋值 key"
+                  onChange={(e) => patchSet(index, { key: e.target.value })}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`删除赋值 ${item.key}`}
+                  onClick={() =>
+                    onChange({
+                      ...data,
+                      config: {
+                        sets: sets.filter((_, i) => i !== index),
+                      },
+                    })
+                  }
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <Textarea
+                rows={2}
+                className="font-mono text-xs"
+                value={item.expression}
+                aria-label={`表达式 ${item.key}`}
+                onChange={(e) =>
+                  patchSet(index, { expression: e.target.value })
+                }
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function InspectorDrawer({
   doc,
   onDocChange,
@@ -1376,6 +1500,14 @@ export function InspectorDrawer({
             {node.data.kind === "human_review" ? (
               <HumanReviewForm
                 data={node.data}
+                onChange={updateData}
+                onError={onError}
+              />
+            ) : null}
+            {node.data.kind === "assign" ? (
+              <AssignForm
+                data={node.data}
+                inParallelRegion={isParallelInteriorNode(doc, node.id)}
                 onChange={updateData}
                 onError={onError}
               />

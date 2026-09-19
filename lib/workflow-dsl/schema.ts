@@ -216,6 +216,40 @@ export const joinConfigSchema = z
   })
   .strict();
 
+export const assignSetSchema = z
+  .object({
+    key: z
+      .string()
+      .min(1)
+      .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "变量 key 须为标识符"),
+    // 空表达式留给 compile 档拒绝：草稿/graph 要能存半成品行。
+    expression: z.string(),
+  })
+  .strict();
+
+/**
+ * 空 sets 允许落库（graph），发布/运行必须至少一条（compile）。
+ * 节点内 key 去重：同一节点写两次同一个 vars 槽，后写覆盖前写，排错时像没写第一条。
+ */
+export const assignConfigSchema = z
+  .object({
+    sets: z.array(assignSetSchema).default([]),
+  })
+  .strict()
+  .superRefine((config, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, item] of config.sets.entries()) {
+      if (seen.has(item.key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `赋值 key 重复: ${item.key}`,
+          path: ["sets", index, "key"],
+        });
+      }
+      seen.add(item.key);
+    }
+  });
+
 export const startNodeDataSchema = z.object({
   kind: z.literal("start"),
   label: z.string().min(1),
@@ -272,6 +306,13 @@ export const joinNodeDataSchema = z.object({
   config: joinConfigSchema,
 });
 
+export const assignNodeDataSchema = z.object({
+  kind: z.literal("assign"),
+  label: z.string().min(1),
+  ui: nodeUiSchema.optional(),
+  config: assignConfigSchema,
+});
+
 export const nodeDataSchema = z.discriminatedUnion("kind", [
   startNodeDataSchema,
   endNodeDataSchema,
@@ -281,6 +322,7 @@ export const nodeDataSchema = z.discriminatedUnion("kind", [
   humanReviewNodeDataSchema,
   forkNodeDataSchema,
   joinNodeDataSchema,
+  assignNodeDataSchema,
 ]);
 
 const reactFlowPositionSchema = z.object({
@@ -380,6 +422,8 @@ export type ConditionNodeConfig = z.infer<typeof conditionConfigSchema>;
 export type HumanReviewNodeConfig = z.infer<typeof humanReviewConfigSchema>;
 export type ForkNodeConfig = z.infer<typeof forkConfigSchema>;
 export type JoinNodeConfig = z.infer<typeof joinConfigSchema>;
+export type AssignNodeConfig = z.infer<typeof assignConfigSchema>;
+export type AssignSetConfig = z.infer<typeof assignSetSchema>;
 export type ForkLaneConfig = z.infer<typeof forkLaneSchema>;
 export type ReviewFormField = z.infer<typeof reviewFormFieldSchema>;
 export type StartNodeConfig = z.infer<typeof startConfigSchema>;
@@ -464,35 +508,6 @@ function refineStart(doc: WorkflowDocument, ctx: z.RefinementCtx) {
     addIssue(ctx, "startNodeId 必须指向唯一的 start 节点", ["startNodeId"], {
       nodeId: start.id,
     });
-  }
-}
-// fix: 校验孤立节点
-function refineIsolateNode(doc: WorkflowDocument, ctx: z.RefinementCtx) {
-  const { nodes, edges } = doc;
-  for (const [index, node] of nodes.entries()) {
-    const { type } = node;
-    const outgoingEdges = outgoing(edges, node.id);
-    const incomingEdges = incoming(edges, node.id);
-    if (type === NODE_TYPE_BY_KIND.start && outgoingEdges.length === 0) {
-      addIssue(ctx, "start 节点不能没有出边", ["nodes", index, "id"], {
-        nodeId: node.id,
-      });
-      continue;
-    } else if (type === NODE_TYPE_BY_KIND.end && incomingEdges.length === 0) {
-      addIssue(ctx, "end 节点不能没有入边", ["nodes", index, "id"], {
-        nodeId: node.id,
-      });
-      continue;
-    } else if (
-      type !== NODE_TYPE_BY_KIND.start &&
-      type !== NODE_TYPE_BY_KIND.end &&
-      (outgoingEdges.length === 0 || incomingEdges.length === 0)
-    ) {
-      addIssue(ctx, "孤立节点", ["nodes", index, "id"], {
-        nodeId: node.id,
-      });
-      continue;
-    }
   }
 }
 
@@ -702,12 +717,14 @@ function refinePortsAndControlFlow(
     }
 
     if (
-      (node.data.kind === "agent" || node.data.kind === "tool") &&
+      (node.data.kind === "agent" ||
+        node.data.kind === "tool" ||
+        node.data.kind === "assign") &&
       outs.length > 1
     ) {
       addIssue(
         ctx,
-        "并行只能从 Fork 的通道端口发出，智能体/工具不能有多条匿名出边",
+        "并行只能从 Fork 的通道端口发出，智能体/工具/赋值不能有多条匿名出边",
         ["nodes", nodeIndex],
         { nodeId: node.id }
       );
@@ -770,6 +787,34 @@ function refinePortsAndControlFlow(
           }
         );
       }
+      if (node.data.kind === "assign") {
+        if (node.data.config.sets.length < 1) {
+          addIssue(
+            ctx,
+            "赋值节点至少需要一条赋值",
+            ["nodes", nodeIndex, "data", "config", "sets"],
+            { nodeId: node.id }
+          );
+        }
+        for (const [setIndex, item] of node.data.config.sets.entries()) {
+          if (!item.expression.trim()) {
+            addIssue(
+              ctx,
+              "赋值表达式不能为空",
+              [
+                "nodes",
+                nodeIndex,
+                "data",
+                "config",
+                "sets",
+                setIndex,
+                "expression",
+              ],
+              { nodeId: node.id }
+            );
+          }
+        }
+      }
     }
   }
 }
@@ -781,7 +826,6 @@ function refineTopology(
 ) {
   refineUniqueIds(doc, ctx);
   refineStart(doc, ctx);
-  // refineIsolateNode(doc, ctx);
   refineEdgesExist(doc, ctx);
   refinePortsAndControlFlow(doc, ctx, mode);
   refineForkJoinRegions(doc, ctx, mode);
@@ -899,6 +943,8 @@ export function defaultConfigForKind(
       return { lanes: defaultForkLanes() };
     case "join":
       return { wait: DEFAULT_JOIN_WAIT };
+    case "assign":
+      return { sets: [] };
   }
 }
 
@@ -941,6 +987,8 @@ export function createNodeData(
       return { kind, label: resolvedLabel, config: config as ForkNodeConfig };
     case "join":
       return { kind, label: resolvedLabel, config: config as JoinNodeConfig };
+    case "assign":
+      return { kind, label: resolvedLabel, config: config as AssignNodeConfig };
   }
 }
 

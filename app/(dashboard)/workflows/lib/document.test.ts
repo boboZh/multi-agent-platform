@@ -116,6 +116,14 @@ describe("addNode", () => {
       wait: "all",
     });
     expect(parseWorkflowDocument(join.doc, "draft").ok).toBe(true);
+
+    const assign = addNode(join.doc, "assign", { x: 0, y: 160 });
+    const assignNode = assign.doc.nodes.find((item) => item.id === assign.nodeId);
+    expect(assignNode?.type).toBe("assignNode");
+    expect(
+      assignNode?.data.kind === "assign" && assignNode.data.config.sets,
+    ).toEqual([]);
+    expect(parseWorkflowDocument(assign.doc, "draft").ok).toBe(true);
   });
 });
 

@@ -29,6 +29,7 @@ import {
   type ConditionNodeConfig,
   type HumanReviewNodeConfig,
   type ToolNodeConfig,
+  type AssignNodeConfig,
   type WorkflowDocument,
   type WorkflowIssue,
 } from "@/lib/workflow-dsl/schema";
@@ -36,6 +37,7 @@ import {
   buildBranchPathMap,
   collectStaticControlEdges,
   endNodeIds,
+  evaluateAssignSets,
   evaluateExpressionRoute,
   lastAiText,
   messageContentToText,
@@ -49,6 +51,7 @@ import {
 export type { WorkflowGraphState } from "@/lib/workflow-dsl/compile-utils";
 export {
   collectStaticControlEdges,
+  evaluateAssignSets,
   evaluateExpressionRoute,
   joinBarrierChannelName,
   pickBranchKey,
@@ -394,6 +397,17 @@ function executeHumanReviewNode(
 }
 
 /**
+ * 赋值节点：表达式沙箱与条件节点相同，失败必须抛出。
+ * 不 catch 成跳过某个 key，否则 round 停在旧值会死循环。
+ */
+async function executeAssignNode(
+  state: WorkflowGraphState,
+  config: AssignNodeConfig
+): Promise<Partial<WorkflowGraphState>> {
+  return { vars: evaluateAssignSets(config.sets, state) };
+}
+
+/**
  * 条件节点只负责算出 `_route`。真正的跳转在 addConditionalEdges 的 path 里读这个字段。
  *
  * LLM 模式把调用放在节点内而不是 path 回调里：path 在 LangGraph 里也可以 async，
@@ -445,7 +459,7 @@ async function executeConditionNode(
  *
  * 入参：画布文档；可选 checkpointer / 预加载的 agents·tools（单测注入，避免打库）。
  * 出参：`ok` 时带 compiled app；失败带回 schema/引用错误，不抛半成品图。
- * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点（Fork/Join 恒等，区内 Agent isolated）→
+ * 步骤：compile 档校验 → 解析引用 → 注册非 start/end 节点（Fork/Join 恒等，Assign 写 vars，区内 Agent isolated）→
  * lane/普通边 addEdge、Join 数组屏障、条件边 addConditionalEdges → compile。
  */
 export async function compileWorkflow(
@@ -524,6 +538,8 @@ export async function compileWorkflow(
           return executeHumanReviewNode(state, data.config, node.id);
         case "condition":
           return executeConditionNode(state, data.config, createModel);
+        case "assign":
+          return executeAssignNode(state, data.config);
         case "fork":
         case "join":
           // 恒等：控制流只靠边。Join 的 AND 汇合来自数组 addEdge 的 NamedBarrierValue，节点本身不能写业务。

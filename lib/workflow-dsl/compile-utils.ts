@@ -128,6 +128,129 @@ export function pickBranchKey(
 const TRUTHY_BRANCH_ALIASES = new Set(["yes", "true", "1"]);
 const FALSY_BRANCH_ALIASES = new Set(["no", "false", "0"]);
 
+/**
+ * expr-eval 默认把 `round` 注册成函数，`state.vars.round` 会在解析期直接失败。
+ * 关掉之后 round 只是普通属性，条件和赋值才能读环计数器；Math.round 本期不用。
+ */
+export function createWorkflowExpressionParser(): Parser {
+  return new Parser({ operators: { round: false } });
+}
+
+function normalizeExpression(expression: string): string {
+  return expression.replaceAll("===", "==").replaceAll("!==", "!=");
+}
+
+function expressionScope(
+  graphState: WorkflowGraphState,
+  vars: Record<string, unknown>
+) {
+  return {
+    state: {
+      vars,
+      lastAgentText: graphState.lastAgentText,
+      _route: graphState._route,
+    },
+  } as never;
+}
+
+/**
+ * JSON 能 round-trip 的值才能写进 vars：数字/布尔/字符串/null/数组/普通对象。
+ * NaN、Infinity、undefined、Date、带原型的实例 stringify 后会丢信息或变成另一类型，
+ * 写进去会让下一轮表达式读到静默损坏的数据（例如 round 变成 null 后再 +1 得到 1）。
+ */
+export function isJsonRoundTripValue(value: unknown): boolean {
+  if (value === null) return true;
+  switch (typeof value) {
+    case "boolean":
+    case "string":
+      return true;
+    case "number":
+      return Number.isFinite(value);
+    case "object": {
+      if (Array.isArray(value)) {
+        return value.every(isJsonRoundTripValue);
+      }
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== Object.prototype && proto !== null) return false;
+      return Object.values(value as Record<string, unknown>).every(
+        isJsonRoundTripValue
+      );
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * 没写过 round 时在求值上下文里补 0，这样 `state.vars.round + 1` 从 0 起加。
+ * 不改 Start 表单：round 不是入参。已经显式写入（含 null）的不覆盖。
+ */
+function varsWithDefaultRound(
+  vars: Record<string, unknown>
+): Record<string, unknown> {
+  if (
+    !Object.prototype.hasOwnProperty.call(vars, "round") ||
+    vars.round === undefined
+  ) {
+    return { ...vars, round: 0 };
+  }
+  return vars;
+}
+
+/**
+ * 求值一条赋值表达式。失败必须抛，调用方不得 catch 成跳过，
+ * 否则 round 停在旧值，带上限的环会空转。
+ *
+ * 入参：表达式、当前 graph state（vars 已含本节点先前几条的写入）。
+ * 出参：JSON round-trip 之后的值。
+ */
+export function evaluateAssignExpression(
+  expression: string,
+  graphState: WorkflowGraphState
+): unknown {
+  const trimmed = expression.trim();
+  if (!trimmed) {
+    throw new Error("赋值表达式不能为空");
+  }
+  const result = createWorkflowExpressionParser()
+    .parse(normalizeExpression(trimmed))
+    .evaluate(
+      expressionScope(graphState, varsWithDefaultRound(graphState.vars))
+    );
+  if (!isJsonRoundTripValue(result)) {
+    throw new Error(
+      "赋值结果无法 JSON 往返，拒绝写入 NaN / undefined / 非平凡对象"
+    );
+  }
+  return JSON.parse(JSON.stringify(result));
+}
+
+/**
+ * 按 sets 顺序求值并累积。后一条能读到前一条刚写的 key。
+ * 任一条抛错则整节点失败，不返回部分 patch。
+ */
+export function evaluateAssignSets(
+  sets: Array<{ key: string; expression: string }>,
+  graphState: WorkflowGraphState
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  let vars = { ...graphState.vars };
+  for (const item of sets) {
+    try {
+      const value = evaluateAssignExpression(item.expression, {
+        ...graphState,
+        vars,
+      });
+      patch[item.key] = value;
+      vars = { ...vars, [item.key]: value };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`赋值「${item.key}」求值失败: ${detail}`);
+    }
+  }
+  return patch;
+}
+
 function isBooleanBit(value: unknown): value is boolean | 0 | 1 {
   return value === true || value === false || value === 0 || value === 1;
 }
@@ -185,21 +308,12 @@ export function evaluateExpressionRoute(
   branchKeys: string[],
   defaultBranch: string
 ): string {
-  // 语法降级，底层的解析库 expr-eval 是一个偏向数学逻辑的求值引擎，它只认识 == !=
-  const normalized = expression.replaceAll("===", "==").replaceAll("!==", "!=");
   try {
-    const parser = new Parser();
     // 上下文沙箱隔离。只把纯粹的 JSON 数据（vars、lastAgentText、_route）暴露给表达式去读取，
-    // expr-eval 的 Value 不能装 BaseMessage；
-    // expr-eval 处理不了复杂的类实例（比如 LangChain 的 BaseMessage 对象）。如果把整个 graphState 塞进去，求值器会崩溃。
-    // 表达式只该读 vars / lastAgentText，消息列表不进求值上下文。
-    const result = parser.parse(normalized).evaluate({
-      state: {
-        vars: graphState.vars,
-        lastAgentText: graphState.lastAgentText,
-        _route: graphState._route,
-      },
-    } as never);
+    // expr-eval 处理不了 BaseMessage；消息列表不进求值上下文。
+    const result = createWorkflowExpressionParser()
+      .parse(normalizeExpression(expression))
+      .evaluate(expressionScope(graphState, graphState.vars));
     return pickExpressionBranchKey(result, branchKeys, defaultBranch);
   } catch {
     return defaultBranch;

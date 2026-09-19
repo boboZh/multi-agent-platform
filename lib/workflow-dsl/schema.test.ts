@@ -20,6 +20,7 @@ import {
   workflowNodeSchema,
   forkConfigSchema,
   joinConfigSchema,
+  assignConfigSchema,
   type WorkflowDocument,
 } from "@/lib/workflow-dsl/schema";
 import { z } from "zod";
@@ -167,6 +168,10 @@ describe("createNodeData / defaultConfigForKind", () => {
     });
     const join = defaultConfigForKind("join");
     expect(join).toEqual({ wait: "all" });
+    const assign = createNodeData("assign");
+    expect(assign.kind).toBe("assign");
+    expect(assign.label).toBe(NODE_KIND_LABELS.assign);
+    expect(assign.config).toEqual({ sets: [] });
   });
 });
 
@@ -1355,5 +1360,97 @@ describe("refineForkJoinRegions", () => {
         parsed.errors.some((err) => err.message.includes("匿名出边")),
       ).toBe(true);
     }
+  });
+});
+
+function assignWithSets(
+  id: string,
+  sets: Array<{ key: string; expression: string }>,
+) {
+  const data = createNodeData("assign");
+  if (data.kind !== "assign") throw new Error("unreachable");
+  data.config = { sets };
+  return { ...node("assign", id), data };
+}
+
+function serialAssignDoc(
+  sets: Array<{ key: string; expression: string }>,
+): WorkflowDocument {
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "赋值图",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      assignWithSets("n_assign", sets),
+      node("end", "n_end"),
+    ],
+    edges: [
+      normalEdge("e1", "n_start", "n_assign"),
+      normalEdge("e2", "n_assign", "n_end"),
+    ],
+  };
+}
+
+describe("assignConfigSchema", () => {
+  it("空 sets 是合法形状，作为拖入时的默认草稿", () => {
+    expect(assignConfigSchema.parse({ sets: [] })).toEqual({ sets: [] });
+  });
+
+  it("边界：同一节点 sets key 重复时拒绝", () => {
+    const result = assignConfigSchema.safeParse({
+      sets: [
+        { key: "round", expression: "1" },
+        { key: "round", expression: "2" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("边界：key 不是标识符时拒绝", () => {
+    const result = assignConfigSchema.safeParse({
+      sets: [{ key: "1round", expression: "1" }],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("assign 空 sets 分档", () => {
+  it("空 sets 的连通图在 graph 档可通过、compile 档拒绝", () => {
+    const doc = serialAssignDoc([]);
+    expect(parseWorkflowDocument(doc, "graph").ok).toBe(true);
+    const compiled = parseWorkflowDocument(doc, "compile");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) {
+      expect(
+        compiled.errors.some((err) => err.message.includes("至少需要一条赋值")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：空表达式在 graph 可通过、compile 拒绝", () => {
+    const doc = serialAssignDoc([{ key: "round", expression: "   " }]);
+    expect(parseWorkflowDocument(doc, "graph").ok).toBe(true);
+    const compiled = parseWorkflowDocument(doc, "compile");
+    expect(compiled.ok).toBe(false);
+    if (!compiled.ok) {
+      expect(
+        compiled.errors.some((err) => err.message.includes("赋值表达式不能为空")),
+      ).toBe(true);
+    }
+  });
+
+  it("边界：半成品赋值节点在 draft 档可存", () => {
+    const parsed = parseWorkflowDocument(
+      {
+        schemaVersion: WORKFLOW_SCHEMA_VERSION,
+        name: "草稿赋值",
+        startNodeId: "n_start",
+        nodes: [node("start", "n_start"), node("assign", "n_assign")],
+        edges: [],
+      },
+      "draft",
+    );
+    expect(parsed.ok).toBe(true);
   });
 });

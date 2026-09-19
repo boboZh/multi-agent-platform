@@ -1325,3 +1325,87 @@ describe("compileWorkflow 环与屏障重置", () => {
     expect(yes._route).toBe("yes");
   });
 });
+
+function serialAssignDoc(
+  sets: Array<{ key: string; expression: string }>,
+): WorkflowDocument {
+  const data = createNodeData("assign");
+  if (data.kind !== "assign") throw new Error("unreachable");
+  data.config = { sets };
+  return {
+    schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    name: "赋值运行",
+    startNodeId: "n_start",
+    nodes: [
+      node("start", "n_start"),
+      { ...node("assign", "n_assign"), data },
+      node("end", "n_end"),
+    ],
+    edges: [
+      {
+        id: "e1",
+        source: "n_start",
+        target: "n_assign",
+        data: { kind: "normal" },
+      },
+      {
+        id: "e2",
+        source: "n_assign",
+        target: "n_end",
+        data: { kind: "normal" },
+      },
+    ],
+  };
+}
+
+describe("compileWorkflow assign", () => {
+  const resources = { agents: new Map(), tools: new Map() };
+
+  it("未写入 round 时赋值 round+1 得到 1，Start 不必声明该入参", async () => {
+    const compiled = await compileWorkflow(
+      serialAssignDoc([{ key: "round", expression: "state.vars.round + 1" }]),
+      { resources },
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const out = await compiled.app.invoke({ messages: [], vars: {} });
+    expect(out.vars.round).toBe(1);
+  });
+
+  it("JSON 类型都可以写入 vars", async () => {
+    const compiled = await compileWorkflow(
+      serialAssignDoc([
+        { key: "n", expression: "2" },
+        { key: "ok", expression: "true" },
+        { key: "title", expression: "'x'" },
+        { key: "ids", expression: "[1, 2]" },
+      ]),
+      { resources },
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const out = await compiled.app.invoke({ messages: [], vars: {} });
+    expect(out.vars).toMatchObject({ n: 2, ok: true, title: "x", ids: [1, 2] });
+  });
+
+  it("边界：空 sets 在 compile 失败，不能编出可运行图", async () => {
+    const compiled = await compileWorkflow(serialAssignDoc([]), { resources });
+    expect(compiled.ok).toBe(false);
+    if (compiled.ok) return;
+    expect(
+      compiled.errors.some((issue) => issue.message.includes("至少需要一条赋值")),
+    ).toBe(true);
+  });
+
+  it("边界：缺失非 round 键做加法时运行 throw，而不是写入 NaN", async () => {
+    const compiled = await compileWorkflow(
+      serialAssignDoc([{ key: "n", expression: "state.vars.missing + 1" }]),
+      { resources },
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    await expect(
+      compiled.app.invoke({ messages: [], vars: {} }),
+    ).rejects.toThrow(/求值失败/);
+  });
+});

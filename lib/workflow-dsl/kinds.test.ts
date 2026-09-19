@@ -20,8 +20,10 @@ describe("fork / join 枚举与端口表", () => {
   it("NODE_KINDS 含 fork/join，画布 type 映射为 forkNode/joinNode", () => {
     expect(NODE_KINDS).toContain("fork");
     expect(NODE_KINDS).toContain("join");
+    expect(NODE_KINDS).toContain("assign");
     expect(NODE_TYPE_BY_KIND.fork).toBe("forkNode");
     expect(NODE_TYPE_BY_KIND.join).toBe("joinNode");
+    expect(NODE_TYPE_BY_KIND.assign).toBe("assignNode");
     expect(KIND_BY_NODE_TYPE.forkNode).toBe("fork");
     expect(KIND_BY_NODE_TYPE.joinNode).toBe("join");
   });
@@ -68,7 +70,8 @@ describe("fork / join 枚举与端口表", () => {
   });
 
   it("边界：未知 kind / type 不得被识别为节点种类", () => {
-    expect(isNodeKind("assign")).toBe(false);
+    expect(isNodeKind("map")).toBe(false);
+    expect(isNodeKind("assign")).toBe(true);
     expect(isNodeType("fork")).toBe(false);
     expect(isNodeType("forkNode")).toBe(true);
   });

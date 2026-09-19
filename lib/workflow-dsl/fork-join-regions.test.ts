@@ -43,6 +43,16 @@ function agentNode(id: string, outputKey: string): WorkflowNode {
   return { ...node("agent", id), data };
 }
 
+function assignNode(
+  id: string,
+  sets: Array<{ key: string; expression: string }>,
+): WorkflowNode {
+  const data = createNodeData("assign");
+  if (data.kind !== "assign") throw new Error("unreachable");
+  data.config = { sets };
+  return { ...node("assign", id), data };
+}
+
 function laneEdge(id: string, source: string, target: string, key: string) {
   return {
     id,
@@ -217,5 +227,48 @@ describe("collectRegionWriteIssues", () => {
 
   it("边界：空 region 列表时不产生写冲突", () => {
     expect(collectRegionWriteIssues(parallelDoc(), [])).toEqual([]);
+  });
+
+  it("赋值节点可以放在通道内，sets.key 与 Agent outputKey 共用冲突表", () => {
+    const doc = parallelDoc();
+    doc.nodes = doc.nodes.map((item) =>
+      item.id === "n_a2"
+        ? assignNode("n_a2", [
+            { key: "out_2", expression: "state.vars.round + 1" },
+          ])
+        : item,
+    );
+    const analysis = analyzeForkJoinRegions(doc);
+    expect(analysis.issues).toEqual([]);
+    expect(collectRegionWriteIssues(doc, analysis.regions)).toEqual([]);
+  });
+
+  it("边界：Assign sets.key 与同区 Agent outputKey 相同时报告冲突", () => {
+    const doc = parallelDoc();
+    doc.nodes = doc.nodes.map((item) =>
+      item.id === "n_a2"
+        ? assignNode("n_a2", [{ key: "out_1", expression: "1" }])
+        : item,
+    );
+    const analysis = analyzeForkJoinRegions(doc);
+    const issues = collectRegionWriteIssues(doc, analysis.regions);
+    expect(issues.some((issue) => issue.message.includes("out_1"))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes("冲突"))).toBe(true);
+  });
+
+  it("边界：两条通道上的 Assign 写同一 key 时也冲突", () => {
+    const doc = parallelDoc();
+    doc.nodes = doc.nodes.map((item) => {
+      if (item.id === "n_a1") {
+        return assignNode("n_a1", [{ key: "shared", expression: "1" }]);
+      }
+      if (item.id === "n_a2") {
+        return assignNode("n_a2", [{ key: "shared", expression: "2" }]);
+      }
+      return item;
+    });
+    const analysis = analyzeForkJoinRegions(doc);
+    const issues = collectRegionWriteIssues(doc, analysis.regions);
+    expect(issues.some((issue) => issue.message.includes("shared"))).toBe(true);
   });
 });

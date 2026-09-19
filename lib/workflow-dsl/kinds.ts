@@ -14,6 +14,7 @@ export const NODE_KINDS = [
   "human_review",
   "fork",
   "join",
+  "assign",
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -27,6 +28,7 @@ export const NODE_TYPE_BY_KIND = {
   human_review: "interruptNode",
   fork: "forkNode",
   join: "joinNode",
+  assign: "assignNode",
 } as const satisfies Record<NodeKind, string>;
 
 export type NodeType = (typeof NODE_TYPE_BY_KIND)[NodeKind];
@@ -40,6 +42,7 @@ export const NODE_TYPES = [
   NODE_TYPE_BY_KIND.human_review,
   NODE_TYPE_BY_KIND.fork,
   NODE_TYPE_BY_KIND.join,
+  NODE_TYPE_BY_KIND.assign,
 ] as const;
 
 export const KIND_BY_NODE_TYPE = Object.fromEntries(
@@ -94,6 +97,7 @@ export const NODE_PORT_SPEC: Record<NodeKind, PortSpec> = {
   human_review: { targets: 1, sources: 1, defaultOutgoingEdgeKind: "normal" },
   fork: { targets: 1, sources: "lanes", defaultOutgoingEdgeKind: "lane" },
   join: { targets: "many", sources: 1, defaultOutgoingEdgeKind: "normal" },
+  assign: { targets: 1, sources: 1, defaultOutgoingEdgeKind: "normal" },
 };
 
 export const NODE_KIND_LABELS: Record<NodeKind, string> = {
@@ -105,6 +109,7 @@ export const NODE_KIND_LABELS: Record<NodeKind, string> = {
   human_review: "人工审核",
   fork: "并行扇出",
   join: "等待汇合",
+  assign: "赋值",
 };
 
 /** 画布 Handle 与并发的双重护栏；lane 数是 Fork 配置，不是平台常量。 */
@@ -136,6 +141,12 @@ export type ConditionBranch = {
 export type ForkLane = {
   key: string;
   label: string;
+};
+
+/** 一条赋值：把 expression 的结果写入 state.vars[key]。 */
+export type AssignSet = {
+  key: string;
+  expression: string;
 };
 
 /** Shared LangGraph state shape (compiler Annotation). Not persisted on the document. */
