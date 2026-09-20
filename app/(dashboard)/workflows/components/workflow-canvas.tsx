@@ -114,7 +114,6 @@ function WorkflowCanvasInner({
    */
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      console.log("handleNodesChange", changes);
       const survivable = changes.filter((change) => change.type !== "remove");
       if (survivable.length === 0) return;
       const transient = survivable.every(
