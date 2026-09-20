@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
     "@langchain/openai",
     "@langchain/anthropic",
     "@langchain/google-genai",
+    "langsmith",
   ],
 };
 

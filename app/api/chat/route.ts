@@ -19,6 +19,10 @@ import {
   titleFromMessage,
 } from "@/lib/agent-runtime/conversation-store";
 import { lastWindow, summarizeMessages } from "@/lib/agent-runtime/context";
+import {
+  chatLangSmithConfig,
+  flushLangSmithTraces,
+} from "@/lib/langsmith/tracing";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -171,10 +175,18 @@ export async function POST(request: Request) {
           },
         });
 
+        const tracing = chatLangSmithConfig({
+          agentId,
+          threadId,
+          modelName,
+        });
         const config = {
           configurable: {
             thread_id: threadId,
           },
+          runName: tracing.runName,
+          tags: tracing.tags,
+          metadata: tracing.metadata,
         };
 
         // 后续改为从redis获取上下文并做动态修剪
@@ -202,6 +214,7 @@ export async function POST(request: Request) {
         send({ type: "error", message });
         send({ type: "done" });
       } finally {
+        await flushLangSmithTraces();
         controller.close();
       }
     },

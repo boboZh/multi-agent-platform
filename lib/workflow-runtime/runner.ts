@@ -26,13 +26,16 @@ import {
   patchFlowRun,
 } from "@/lib/workflow-runtime/persist";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
-import { openEngineEventLog } from "@/lib/workflow-runtime/engine-event-log";
 import {
   isDslNodeName,
   nodeIdFromStreamMetadata,
   pickFailedTaskName,
 } from "@/lib/workflow-runtime/stream-attribution";
 import type { RetrySnapshot } from "@/lib/workflow-runtime/retry";
+import {
+  flushLangSmithTraces,
+  workflowLangSmithConfig,
+} from "@/lib/langsmith/tracing";
 
 export { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 
@@ -167,73 +170,64 @@ export async function executeWorkflowRun(options: {
       graphInput = null;
     }
 
+    const tracing = workflowLangSmithConfig({ run, command, userId });
     const eventStream = await app.streamEvents(graphInput, {
       version: "v2",
       configurable,
+      runName: tracing.runName,
+      tags: tracing.tags,
+      metadata: tracing.metadata,
     });
 
-    // 每次 execute 单独 dump 一份 streamEvents，resume/retry 不覆盖上一轮，方便对照并行分支。
-    const eventLog = await openEngineEventLog({
-      runId: run.id,
-      threadId: run.thread_id,
-      commandKind: command.kind,
-    });
-    let eventIndex = 0;
-    try {
-      for await (const raw of eventStream) {
-        await eventLog?.write(eventIndex, raw);
-        eventIndex += 1;
-        const name = typeof raw.name === "string" ? raw.name : undefined;
-        const eventNodeId = nodeIdFromStreamMetadata(raw.metadata, nodeIds);
+    for await (const raw of eventStream) {
+      const name = typeof raw.name === "string" ? raw.name : undefined;
+      const eventNodeId = nodeIdFromStreamMetadata(raw.metadata, nodeIds);
 
-        if (raw.event === "on_chain_start" && isDslNodeName(name, nodeIds)) {
-          currentNodeIds.add(name as string);
-          await emit({
-        type: "node_start",
-        nodeId: name as string,
-        currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
-      });
-        }
-        if (raw.event === "on_chain_end" && isDslNodeName(name, nodeIds)) {
-          currentNodeIds.delete(name as string);
-          await emit({
-            type: "node_end",
-            nodeId: name as string,
-            text: textFromChainOutput(raw.data?.output),
-            currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
-          });
-        }
-        if (raw.event === "on_chain_error" && isDslNodeName(name, nodeIds)) {
-          lastFailedNodeId = name;
-        }
-
-        const mapped = mapStreamEvent(raw);
-        if (mapped?.type === "token") {
-          await emit({
-            type: "token",
-            nodeId: eventNodeId,
-            content: mapped.content,
-          });
-        } else if (mapped?.type === "tool_start") {
-          await emit({
-            type: "tool_start",
-            nodeId: eventNodeId,
-            name: mapped.name,
-            input: mapped.input,
-            runId: mapped.runId,
-          });
-        } else if (mapped?.type === "tool_end") {
-          await emit({
-            type: "tool_end",
-            nodeId: eventNodeId,
-            name: mapped.name,
-            output: mapped.output,
-            runId: mapped.runId,
-          });
-        }
+      if (raw.event === "on_chain_start" && isDslNodeName(name, nodeIds)) {
+        currentNodeIds.add(name as string);
+        await emit({
+          type: "node_start",
+          nodeId: name as string,
+          currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
+        });
       }
-    } finally {
-      await eventLog?.close();
+      if (raw.event === "on_chain_end" && isDslNodeName(name, nodeIds)) {
+        currentNodeIds.delete(name as string);
+        await emit({
+          type: "node_end",
+          nodeId: name as string,
+          text: textFromChainOutput(raw.data?.output),
+          currentNodeIds: snapshotCurrentNodeIds(currentNodeIds),
+        });
+      }
+      if (raw.event === "on_chain_error" && isDslNodeName(name, nodeIds)) {
+        lastFailedNodeId = name;
+      }
+
+      const mapped = mapStreamEvent(raw);
+      if (mapped?.type === "token") {
+        await emit({
+          type: "token",
+          nodeId: eventNodeId,
+          content: mapped.content,
+        });
+      } else if (mapped?.type === "tool_start") {
+        await emit({
+          type: "tool_start",
+          nodeId: eventNodeId,
+          name: mapped.name,
+          input: mapped.input,
+          runId: mapped.runId,
+        });
+      } else if (mapped?.type === "tool_end") {
+        await emit({
+          type: "tool_end",
+          nodeId: eventNodeId,
+          name: mapped.name,
+          output: mapped.output,
+          runId: mapped.runId,
+        });
+      }
     }
 
     const state = await app.getState({
@@ -321,5 +315,8 @@ export async function executeWorkflowRun(options: {
     });
     await emit({ type: "done" });
     return next;
+  } finally {
+    // after() 里跑图，进程可能立刻冻结；刷共享 Client 避免 root span 丢在队列里。
+    await flushLangSmithTraces();
   }
 }
