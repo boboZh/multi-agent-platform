@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { analyzeForkJoinRegions } from "@/lib/workflow-dsl/fork-join-regions";
-import { REVIEW_FIELD_TYPES, NODE_KIND_LABELS, START_VARIABLE_TYPES, START_VARIABLE_TYPE_LABELS } from "@/lib/workflow-dsl/kinds";
+import {
+  REVIEW_FIELD_TYPES,
+  NODE_KIND_LABELS,
+  START_VARIABLE_TYPES,
+  START_VARIABLE_TYPE_LABELS,
+} from "@/lib/workflow-dsl/kinds";
 import type {
   StartVariable,
   WorkflowDocument,
@@ -25,6 +30,11 @@ import {
   setForkLaneLabel,
   updateNode,
 } from "../lib/document";
+import {
+  formatEnumOptions,
+  parseEnumOptions,
+  sameEnumOptions,
+} from "../lib/enum-options";
 import {
   duplicateInputMapTargets,
   inputMapFromRows,
@@ -84,9 +94,60 @@ function Field({
       </label>
       {children}
       {hint ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {hint}
+        </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 枚举选项输入框。
+ *
+ * 用本地草稿 + 失焦提交：options 在 DSL 里是 string[]，输入框却是逗号分隔字符串。
+ * 如果边打字边 split/filter/join 回填 value，末尾逗号会被立刻吃掉，第二项敲不进去。
+ *
+ * schema 要求 enum 至少一项。失焦时如果解析结果为空，回滚到上次有效值，
+ * 避免把 formFields 写成非法文档。
+ *
+ * 不需要 effect 同步外部值：切到 enum 时本组件才挂载，draft 从当前 options 初始化；
+ * 切走会卸载。同一字段上只有这一处能改 options。
+ */
+function EnumOptionsInput({
+  options,
+  onCommit,
+}: {
+  options: string[];
+  onCommit: (next: string[]) => void;
+}) {
+  const serialized = formatEnumOptions(options);
+  const [draft, setDraft] = useState(serialized);
+
+  function commit() {
+    const next = parseEnumOptions(draft);
+    if (next.length === 0) {
+      setDraft(serialized);
+      return;
+    }
+    setDraft(formatEnumOptions(next));
+    if (sameEnumOptions(next, options)) return;
+    onCommit(next);
+  }
+
+  return (
+    <Input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") setDraft(serialized);
+      }}
+      placeholder="approve, reject"
+      className="h-8"
+      aria-label="枚举选项"
+    />
   );
 }
 
@@ -162,13 +223,13 @@ function InputMapEditor({
   inParallelRegion?: boolean;
 }) {
   const [rows, setRows] = useState<InputMapRow[]>(() =>
-    rowsFromInputMap(value),
+    rowsFromInputMap(value)
   );
   const duplicates = duplicateInputMapTargets(rows);
 
   function sameMap(
     left: Record<string, string> | undefined,
-    right: Record<string, string> | undefined,
+    right: Record<string, string> | undefined
   ) {
     const leftEntries = Object.entries(left ?? {});
     const rightEntries = Object.entries(right ?? {});
@@ -186,9 +247,7 @@ function InputMapEditor({
   }
 
   function patchRow(id: string, patch: Partial<InputMapRow>) {
-    commitRows(
-      rows.map((row) => (row.id === id ? { ...row, ...patch } : row)),
-    );
+    commitRows(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
   return (
@@ -239,8 +298,10 @@ function InputMapEditor({
           {rows.map((row) => {
             const target = row.target.trim();
             const source = row.source.trim();
-            const targetInvalid = Boolean(target) && !isValidInputMapTarget(target);
-            const sourceSuspicious = Boolean(source) && !isLikelyStatePath(source);
+            const targetInvalid =
+              Boolean(target) && !isValidInputMapTarget(target);
+            const sourceSuspicious =
+              Boolean(source) && !isLikelyStatePath(source);
             const duplicated = Boolean(target) && duplicates.has(target);
             const lastAgentTextWarning = inParallelRegion
               ? parallelInputMapSourceWarning(source)
@@ -266,7 +327,9 @@ function InputMapEditor({
                     value={row.source}
                     placeholder="state.vars.order_id"
                     aria-label="state 取值路径"
-                    aria-invalid={sourceSuspicious || Boolean(lastAgentTextWarning)}
+                    aria-invalid={
+                      sourceSuspicious || Boolean(lastAgentTextWarning)
+                    }
                     className="h-8 font-mono text-xs"
                     onChange={(event) =>
                       patchRow(row.id, { source: event.target.value })
@@ -294,7 +357,7 @@ function InputMapEditor({
                       "mt-1.5 text-[10px] leading-relaxed",
                       targetInvalid || duplicated || lastAgentTextWarning
                         ? "text-destructive"
-                        : "text-amber-700",
+                        : "text-amber-700"
                     )}
                   >
                     {targetInvalid
@@ -331,7 +394,7 @@ function StartForm({
       ...data,
       config: {
         variables: variables.map((variable, i) =>
-          i === index ? { ...variable, ...patch } : variable,
+          i === index ? { ...variable, ...patch } : variable
         ),
       },
     });
@@ -401,7 +464,9 @@ function StartForm({
                   className="h-8 font-mono text-xs"
                   placeholder="orderId"
                   aria-label="变量 key"
-                  onChange={(e) => patchVariable(index, { key: e.target.value })}
+                  onChange={(e) =>
+                    patchVariable(index, { key: e.target.value })
+                  }
                 />
                 <Input
                   value={variable.label}
@@ -436,7 +501,8 @@ function StartForm({
                   aria-label="变量类型"
                   onChange={(e) =>
                     patchVariable(index, {
-                      type: e.target.value as (typeof START_VARIABLE_TYPES)[number],
+                      type: e.target
+                        .value as (typeof START_VARIABLE_TYPES)[number],
                     })
                   }
                 >
@@ -585,8 +651,8 @@ function ToolForm({
     <>
       {inParallelRegion ? (
         <p className="rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900">
-          此节点在并行通道内：不要把输出键设为 lastAgentText，也不要在输入映射里读
-          state.lastAgentText。
+          此节点在并行通道内：不要把输出键设为
+          lastAgentText，也不要在输入映射里读 state.lastAgentText。
         </p>
       ) : null}
       <Field label="绑定工具" htmlFor="node-tool">
@@ -707,7 +773,7 @@ function ConditionForm({
                       mode: "expression",
                       expression: "state.vars.need_human === true",
                     },
-                  },
+                  }
             );
           }}
         >
@@ -801,7 +867,7 @@ function ConditionForm({
                     doc,
                     nodeId,
                     branch.key,
-                    next,
+                    next
                   );
                   if (!result.ok) {
                     onError(result.reason);
@@ -835,7 +901,12 @@ function ConditionForm({
               aria-label={`分支 ${branch.key} 的显示名`}
               onChange={(e) =>
                 onDocChange(
-                  setConditionBranchLabel(doc, nodeId, branch.key, e.target.value),
+                  setConditionBranchLabel(
+                    doc,
+                    nodeId,
+                    branch.key,
+                    e.target.value
+                  )
                 )
               }
             />
@@ -958,7 +1029,9 @@ function ForkForm({
               className="h-8"
               aria-label={`通道 ${lane.key} 的显示名`}
               onChange={(e) =>
-                onDocChange(setForkLaneLabel(doc, nodeId, lane.key, e.target.value))
+                onDocChange(
+                  setForkLaneLabel(doc, nodeId, lane.key, e.target.value)
+                )
               }
             />
           </div>
@@ -1012,15 +1085,9 @@ function ForkForm({
   );
 }
 
-function JoinForm({
-  doc,
-  nodeId,
-}: {
-  doc: WorkflowDocument;
-  nodeId: string;
-}) {
+function JoinForm({ doc, nodeId }: { doc: WorkflowDocument; nodeId: string }) {
   const region = analyzeForkJoinRegions(doc).regions.find(
-    (item) => item.joinId === nodeId,
+    (item) => item.joinId === nodeId
   );
 
   return (
@@ -1033,7 +1100,10 @@ function JoinForm({
           全部完成
         </div>
       </Field>
-      <Field label="配对 Fork" hint="从连线拓扑推断，不能手改，以免和实际边不一致。">
+      <Field
+        label="配对 Fork"
+        hint="从连线拓扑推断，不能手改，以免和实际边不一致。"
+      >
         <div className="rounded-lg border border-primary/15 bg-muted/40 px-2.5 py-2 text-sm">
           {region ? (
             <span className="font-mono text-xs">{region.forkId}</span>
@@ -1063,7 +1133,7 @@ function HumanReviewForm({
       config: {
         ...data.config,
         formFields: fields.map((field, i) =>
-          i === index ? { ...field, ...patch } : field,
+          i === index ? { ...field, ...patch } : field
         ),
       },
     });
@@ -1148,11 +1218,15 @@ function HumanReviewForm({
               value={field.type}
               aria-label="字段类型"
               onChange={(e) => {
-                const type = e.target.value as (typeof REVIEW_FIELD_TYPES)[number];
+                const type = e.target
+                  .value as (typeof REVIEW_FIELD_TYPES)[number];
                 // 从 enum 切走时清掉 options，避免留下一份没人读的死数据。
                 patchField(index, {
                   type,
-                  options: type === "enum" ? (field.options ?? ["approve"]) : undefined,
+                  options:
+                    type === "enum"
+                      ? (field.options ?? ["approve"])
+                      : undefined,
                 });
               }}
             >
@@ -1163,19 +1237,9 @@ function HumanReviewForm({
               ))}
             </select>
             {field.type === "enum" ? (
-              <Input
-                value={(field.options ?? []).join(", ")}
-                placeholder="approve, reject"
-                className="h-8"
-                aria-label="枚举选项"
-                onChange={(e) =>
-                  patchField(index, {
-                    options: e.target.value
-                      .split(",")
-                      .map((option) => option.trim())
-                      .filter(Boolean),
-                  })
-                }
+              <EnumOptionsInput
+                options={field.options ?? []}
+                onCommit={(options) => patchField(index, { options })}
               />
             ) : null}
           </div>
@@ -1194,7 +1258,8 @@ function EdgeInspector({
   edgeId: string;
 }) {
   const edge = doc.edges.find((item) => item.id === edgeId);
-  if (!edge) return <p className="text-sm text-muted-foreground">连线已不存在。</p>;
+  if (!edge)
+    return <p className="text-sm text-muted-foreground">连线已不存在。</p>;
 
   return (
     <div className="space-y-2 text-sm">
@@ -1223,7 +1288,8 @@ function EdgeInspector({
         </div>
       ) : null}
       <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-        连线的分支/通道归属跟着端口走，要改请在画布上重新连，或到条件 / 并行节点里改 key。
+        连线的分支/通道归属跟着端口走，要改请在画布上重新连，或到条件 /
+        并行节点里改 key。
       </p>
     </div>
   );
@@ -1250,14 +1316,13 @@ function AssignForm({
     return `key_${index}`;
   }
 
-  function patchSet(
-    index: number,
-    patch: Partial<(typeof sets)[number]>,
-  ) {
+  function patchSet(index: number, patch: Partial<(typeof sets)[number]>) {
     onChange({
       ...data,
       config: {
-        sets: sets.map((item, i) => (i === index ? { ...item, ...patch } : item)),
+        sets: sets.map((item, i) =>
+          i === index ? { ...item, ...patch } : item
+        ),
       },
     });
   }
@@ -1268,7 +1333,8 @@ function AssignForm({
         <div>
           <div className="text-sm font-medium text-foreground">赋值列表</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            表达式与条件节点相同，只读 state.vars / state.lastAgentText。求值失败会让整节点失败，不会跳过某一行。
+            表达式与条件节点相同，只读 state.vars /
+            state.lastAgentText。求值失败会让整节点失败，不会跳过某一行。
           </p>
         </div>
         <Button
@@ -1285,8 +1351,7 @@ function AssignForm({
                   ...sets,
                   {
                     key,
-                    expression:
-                      key === "round" ? "state.vars.round + 1" : "0",
+                    expression: key === "round" ? "state.vars.round + 1" : "0",
                   },
                 ],
               },

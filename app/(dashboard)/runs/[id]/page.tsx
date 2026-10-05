@@ -104,7 +104,7 @@ export default function RunConsolePage({
     let stopped = false;
     let source: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    let attempt = 0;
+    // let attempt = 0;
 
     const open = () => {
       if (stopped) return;
@@ -117,7 +117,7 @@ export default function RunConsolePage({
       source = es;
       setConnection("streaming");
       es.onmessage = (message) => {
-        attempt = 0;
+        // attempt = 0;
         try {
           const parsed: unknown = JSON.parse(message.data);
           console.log("es.onmessage", parsed);
@@ -134,7 +134,7 @@ export default function RunConsolePage({
         }
       };
       es.onerror = (error) => {
-        console.log("es.onerror", es, error);
+        console.log("es.onerror", error);
         if (stopped) return;
         // CONNECTING：浏览器正在自带重连，不要 close 再 new，否则 /events 编译请求会叠成进程风暴。
         if (es.readyState === EventSource.CONNECTING) {
@@ -144,9 +144,9 @@ export default function RunConsolePage({
         es.close();
         source = null;
         setConnection("reconnecting");
-        const delay = Math.min(2000 * 2 ** attempt, 15_000);
-        attempt += 1;
-        retryTimer = setTimeout(open, delay);
+        // const delay = Math.min(2000 * 2 ** attempt, 15_000);
+        // attempt += 1;
+        retryTimer = setTimeout(open, 2000);
       };
     };
 
