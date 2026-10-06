@@ -14,9 +14,13 @@ import {
   type BaseCheckpointSaver,
   type CompiledStateGraph,
 } from "@langchain/langgraph";
-import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { createReactAgent, ToolNode } from "@langchain/langgraph/prebuilt";
 import { createChatModel } from "@/lib/agent-runtime/llm";
 import { buildLangChainTools } from "@/lib/agent-runtime/tools";
+import {
+  AGENT_INVOKE_TIMEOUT_MS,
+  withTimeout,
+} from "@/lib/workflow-runtime/timeout";
 import { createSupabaseAdmin } from "@/lib/supabase-admin";
 import type {
   AgentRow,
@@ -144,6 +148,7 @@ function asGraphState(
 }
 
 /**
+ * 一股脑地获取工作流需要的tool和agent的配置信息
  * 编译期把 agentId / toolId 解析成行数据，运行时节点闭包直接用，避免每步再打库。
  * 发布后的 flow_versions 钉死的是 DSL；智能体提示词仍以编译当下的 agents 行为准。
  */
@@ -339,7 +344,9 @@ async function executeAgentNode(
 
   const reactAgent = createReactAgent({
     llm,
-    tools: buildLangChainTools(tools),
+    // 默认 ToolNode 把工具异常改写成 ToolMessage，超时会变成一条普通工具结果，run 不会 failed。
+    // 关掉之后抛错从 invoke 冒泡，检查点停在该节点执行前，控制台才能对这次失败重试。
+    tools: new ToolNode(buildLangChainTools(tools), { handleToolErrors: false }),
     prompt: system,
   });
 
@@ -353,9 +360,14 @@ async function executeAgentNode(
         ? injected
         : [new HumanMessage("请根据系统提示完成任务。")]
       : [...state.messages, ...injected];
-  const result = await reactAgent.invoke({
-    messages: inbound,
-  });
+
+  // 只有最外层工作流才用 streamEvents，内层 agent 直接 invoke 拿最终结果。
+  // 到点抛 TimeoutError 后不再 catch：节点失败，整次 run 写成 failed，人在控制台按检查点重试。
+  const result = await withTimeout(
+    AGENT_INVOKE_TIMEOUT_MS,
+    "智能体调用",
+    (signal) => reactAgent.invoke({ messages: inbound }, { signal }),
+  );
   const text = lastAiText(result.messages as BaseMessage[]);
   const vars = { [config.outputKey]: text };
   if (messagesMode === "isolated") {

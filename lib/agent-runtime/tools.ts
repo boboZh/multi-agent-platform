@@ -1,6 +1,8 @@
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { tool } from "@langchain/core/tools";
 import { z, type ZodTypeAny } from "zod";
 import type { ToolRow } from "@/app/(dashboard)/agents/lib/types";
+import { fetchWithinTimeout } from "@/lib/agent-runtime/fetch-with-timeout";
 
 type JsonSchemaField = {
   type?: string;
@@ -32,12 +34,14 @@ function zodFromConnectionConfig(config: unknown) {
 
 async function executeKnownTool(
   name: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<string> {
   if (name === "get_weather" || name.includes("weather")) {
     const city = String(input.city ?? input.location ?? "杭州");
-    const res = await fetch(
-      `https://wttr.in/${encodeURIComponent(city)}?format=j1`
+    const res = await fetchWithinTimeout(
+      `https://wttr.in/${encodeURIComponent(city)}?format=j1`,
+      signal,
     );
     if (!res.ok) {
       return JSON.stringify({
@@ -61,8 +65,9 @@ async function executeKnownTool(
 
   if (name === "web_search" || name.includes("search")) {
     const query = String(input.query ?? input.q ?? "");
-    const res = await fetch(
-      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`
+    const res = await fetchWithinTimeout(
+      `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`,
+      signal,
     );
     if (!res.ok) {
       return JSON.stringify({ query, error: `Search failed (${res.status})` });
@@ -105,8 +110,12 @@ export function buildLangChainTools(tools: ToolRow[]) {
   return tools.map((row) => {
     const schema = zodFromConnectionConfig(row.connection_config);
     return tool(
-      async (input) =>
-        executeKnownTool(row.name, (input ?? {}) as Record<string, unknown>),
+      async (input, config: RunnableConfig) =>
+        executeKnownTool(
+          row.name,
+          (input ?? {}) as Record<string, unknown>,
+          config?.signal,
+        ),
       {
         name: row.name,
         description:

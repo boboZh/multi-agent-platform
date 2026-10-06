@@ -64,7 +64,7 @@ export default function RunConsolePage({
   const [submitting, setSubmitting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [stateLoading, setStateLoading] = useState(false);
-  const [sseNonce, setSseNonce] = useState(0);
+  const [sseNonce, setSseNonce] = useState(0); // 强迫重新订阅sse的计数器
 
   // 获取运行详情：流基本信息、运行信息
   useEffect(() => {

@@ -208,7 +208,6 @@ export async function POST(request: Request) {
         }
 
         send({ type: "done" });
-        const state = await reactAgent.getState(config);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Agent run failed";
         send({ type: "error", message });
