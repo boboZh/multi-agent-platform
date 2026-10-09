@@ -7,6 +7,7 @@ import {
   Bot,
   GitBranch,
   Database,
+  Wrench,
   PanelLeftClose,
   PanelLeftOpen,
   FlipHorizontal,
@@ -39,6 +40,11 @@ export default function DashboardLayout({
       name: "智能体",
       href: "/agents",
       icon: <Bot size={18} />,
+    },
+    {
+      name: "工具",
+      href: "/tools",
+      icon: <Wrench size={18} />,
     },
     {
       name: "智能体工作流",

@@ -1,37 +1,21 @@
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { tool } from "@langchain/core/tools";
-import { z, type ZodTypeAny } from "zod";
 import type { ToolRow } from "@/app/(dashboard)/agents/lib/types";
 import { fetchWithinTimeout } from "@/lib/agent-runtime/fetch-with-timeout";
+import {
+  asToolInput,
+  formatToolHttpResult,
+  parseConnectionConfig,
+  prepareHttpCall,
+  renderStaticBody,
+  zodObjectFromConfig,
+  type HttpExecutor,
+} from "@/lib/agent-runtime/tool-config";
 
-type JsonSchemaField = {
-  type?: string;
-  description?: string;
-};
-
-function zodFromConnectionConfig(config: unknown) {
-  const schema = (config as { schema?: Record<string, JsonSchemaField> } | null)
-    ?.schema;
-  if (!schema || Object.keys(schema).length === 0) {
-    return z.object({
-      input: z.string().optional().describe("Tool input"),
-    });
-  }
-
-  const shape: Record<string, ZodTypeAny> = {};
-  for (const [key, def] of Object.entries(schema)) {
-    let field: ZodTypeAny =
-      def?.type === "number"
-        ? z.number()
-        : def?.type === "boolean"
-          ? z.boolean()
-          : z.string();
-    if (def?.description) field = field.describe(def.description);
-    shape[key] = field;
-  }
-  return z.object(shape);
-}
-
+/**
+ * 没有 executor 的旧工具仍按名字执行。
+ * 新工具应在 connection_config.executor 里声明 HTTP 或静态 JSON，这里不要再加分支。
+ */
 async function executeKnownTool(
   name: string,
   input: Record<string, unknown>,
@@ -105,17 +89,62 @@ async function executeKnownTool(
   });
 }
 
-// 遍历tools，通过tool（）函数动态包裹这些工具，方便喂给reactAgent
+async function executeHttpTool(
+  executor: HttpExecutor,
+  input: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const prepared = prepareHttpCall(executor, input);
+  if (!prepared.ok) {
+    return JSON.stringify({ error: prepared.error });
+  }
+  const { url, method, headers, body } = prepared.call;
+  const res = await fetchWithinTimeout(url, signal, {
+    method,
+    headers,
+    body,
+  });
+  const text = await res.text();
+  return formatToolHttpResult(res.status, text, executor.pick);
+}
+
+/**
+ * 按工具行执行一次调用。
+ *
+ * 入参：工具行、模型传入的参数、外层 abort signal。
+ * 出参：交给模型的字符串。配置错误返回 JSON，不抛；网络超时仍抛出。
+ * 步骤：解析 connection_config → HTTP / 静态模板 → 都没有才按工具名走旧实现。
+ * 写了 executor 但解析失败时不回落：名字里带 weather 的坏配置不能偷偷打到天气接口。
+ */
+export async function executeToolRow(
+  row: Pick<ToolRow, "name" | "connection_config">,
+  input: unknown,
+  signal?: AbortSignal,
+): Promise<string> {
+  const args = asToolInput(input);
+  const parsed = parseConnectionConfig(row.connection_config);
+  if (parsed.rejected) {
+    return JSON.stringify({
+      tool: row.name,
+      error: parsed.errors.join("；") || "工具配置无效",
+    });
+  }
+  if (parsed.executor?.kind === "http") {
+    return executeHttpTool(parsed.executor, args, signal);
+  }
+  if (parsed.executor?.kind === "static") {
+    return renderStaticBody(parsed.executor.body, args);
+  }
+  return executeKnownTool(row.name, args, signal);
+}
+
+/** 把工具目录包成 LangChain tool。执行逻辑来自 connection_config，不在这里按名字分支。 */
 export function buildLangChainTools(tools: ToolRow[]) {
   return tools.map((row) => {
-    const schema = zodFromConnectionConfig(row.connection_config);
+    const schema = zodObjectFromConfig(row.connection_config);
     return tool(
       async (input, config: RunnableConfig) =>
-        executeKnownTool(
-          row.name,
-          (input ?? {}) as Record<string, unknown>,
-          config?.signal,
-        ),
+        executeToolRow(row, input, config?.signal),
       {
         name: row.name,
         description:
@@ -123,7 +152,7 @@ export function buildLangChainTools(tools: ToolRow[]) {
           row.display_name?.trim() ||
           `Execute tool ${row.name}`,
         schema,
-      }
+      },
     );
   });
 }

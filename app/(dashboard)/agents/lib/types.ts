@@ -14,7 +14,8 @@ export type AgentRow = {
 /**
  * `tools` 表行。
  * `tool_type`：explicit 需用户显式授权才进入 agent_tools；implicit 由运行时默认注入，目录/编辑器不展示、不绑定。
- * `connection_config` 结构因工具类型而异，本模块只透传，不解析。
+ * `connection_config.schema` 是模型入参；`executor` 为 http 或 static 时，运行时按配置生成函数。
+ * 没有 executor 的旧行仍按工具名走内置实现。本模块只透传，解析在 lib/agent-runtime/tool-config.ts。
  */
 export type ToolRow = {
   id: UUID;

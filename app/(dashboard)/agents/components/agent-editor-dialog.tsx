@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
@@ -296,7 +297,11 @@ export function AgentEditorDialog({
 
             {explicitTools.length === 0 ? (
               <div className="rounded-xl border border-dashed border-primary/25 bg-primary/5 p-4 text-sm text-muted-foreground">
-                暂无可用显式工具。请先创建工具，再返回此处授予智能体权限。
+                暂无可用显式工具。请先到{" "}
+                <Link href="/tools" className="text-primary underline">
+                  工具目录
+                </Link>{" "}
+                创建，再返回此处授予智能体权限。
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
