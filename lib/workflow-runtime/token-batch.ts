@@ -2,11 +2,14 @@ import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 type TokenEvent = Extract<WorkflowSseEvent, { type: "token" }>;
 const BATCH_SIZE = 128;
-const FLUSH_INTERVAL_MS = 20;
+const FLUSH_INTERVAL_MS = 10;
 export const MAX_PENDING_TOKENS = 4096;
 
 /** 按上限拆分 token 快照，保留原始帧及节点归属，不合并不同 lane 的文本。 */
-export function splitTokenBatches<T>(events: readonly T[], limit: number): T[][] {
+export function splitTokenBatches<T>(
+  events: readonly T[],
+  limit: number
+): T[][] {
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error("批次上限必须是正整数");
   }
@@ -23,7 +26,9 @@ export function splitTokenBatches<T>(events: readonly T[], limit: number): T[][]
  * 控制事件前必须 flush，避免 node_end/done 越过 token；调用者达到积压上限时也需 flush。
  * 后台失败留到 flush 抛出，既不产生未处理拒绝，也不把传输失败伪装成完成。
  */
-export function createTokenBatcher(publish: (events: TokenEvent[]) => Promise<void>) {
+export function createTokenBatcher(
+  publish: (events: TokenEvent[]) => Promise<void>
+) {
   let pending: TokenEvent[] = [];
   let worker: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -44,14 +49,16 @@ export function createTokenBatcher(publish: (events: TokenEvent[]) => Promise<vo
           await publish(batch);
         }
       }
-    })().catch((error: unknown) => {
-      failure = { error };
-    }).finally(() => {
-      worker = undefined;
-      if (pending.length > 0 && !failure && timer === undefined) {
-        timer = setTimeout(start, FLUSH_INTERVAL_MS);
-      }
-    });
+    })()
+      .catch((error: unknown) => {
+        failure = { error };
+      })
+      .finally(() => {
+        worker = undefined;
+        if (pending.length > 0 && !failure && timer === undefined) {
+          timer = setTimeout(start, FLUSH_INTERVAL_MS);
+        }
+      });
   };
 
   return {
@@ -62,7 +69,9 @@ export function createTokenBatcher(publish: (events: TokenEvent[]) => Promise<vo
         timer = setTimeout(start, FLUSH_INTERVAL_MS);
       }
     },
-    get pendingCount() { return pending.length; },
+    get pendingCount() {
+      return pending.length;
+    },
     async flush() {
       do {
         start();
