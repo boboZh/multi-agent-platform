@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { ChatMarkdown } from "@/app/(dashboard)/agents/components/chat-markdown";
+import { nextAutoFollow } from "@/app/(dashboard)/runs/lib/auto-follow";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 function lineOf(event: Exclude<WorkflowSseEvent, { type: "token" }>): string {
@@ -35,9 +37,77 @@ function EventIndex({ n }: { n: number }) {
 }
 
 export function RunEventTimeline({ events }: { events: WorkflowSseEvent[] }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLOListElement>(null);
+  const followingRef = useRef(true);
+  const previousTopRef = useRef(0);
+  const touchYRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) return;
+    let frame: number | null = null;
+    const follow = () => {
+      if (!followingRef.current || frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (!followingRef.current) return;
+        // 只移动左侧容器；连续 token 不使用平滑动画，以免动画排队追不上正文。
+        viewport.scrollTop = viewport.scrollHeight;
+        previousTopRef.current = viewport.scrollTop;
+      });
+    };
+    // token 拼接时事件条数不变，Markdown 也可能延后排版，因此观察实际内容高度。
+    // 容器尺寸改变时同样重新贴底；用 ref 保存跟随状态，避免带动画布重新渲染。
+    const observer = new ResizeObserver(follow);
+    observer.observe(content);
+    observer.observe(viewport);
+    follow();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, []);
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-      <ol className="space-y-1.5 text-[11px] leading-relaxed text-foreground/80">
+    <div
+      ref={viewportRef}
+      className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
+      style={{ overflowAnchor: "none" }}
+      tabIndex={0}
+      aria-label="运行输出"
+      onScroll={(event) => {
+        const viewport = event.currentTarget;
+        followingRef.current = nextAutoFollow(
+          followingRef.current, previousTopRef.current, viewport,
+        );
+        previousTopRef.current = viewport.scrollTop;
+      }}
+      onWheel={(event) => {
+        if (event.deltaY < 0) followingRef.current = false;
+      }}
+      onTouchStart={(event) => {
+        touchYRef.current = event.touches[0]?.clientY ?? null;
+      }}
+      onTouchMove={(event) => {
+        const y = event.touches[0]?.clientY;
+        if (y === undefined) return;
+        if (touchYRef.current !== null && y > touchYRef.current) {
+          followingRef.current = false;
+        }
+        touchYRef.current = y;
+      }}
+      onTouchEnd={() => { touchYRef.current = null; }}
+      onTouchCancel={() => { touchYRef.current = null; }}
+      onKeyDown={(event) => {
+        if (["ArrowUp", "PageUp", "Home"].includes(event.key) ||
+          (event.key === " " && event.shiftKey)) {
+          followingRef.current = false;
+        }
+      }}
+    >
+      <ol ref={contentRef} className="space-y-1.5 text-[11px] leading-relaxed text-foreground/80">
         {events.length === 0 ? (
           <li className="font-mono text-muted-foreground">
             暂无事件。运行开始后会在这里流式输出。
