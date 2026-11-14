@@ -7,6 +7,8 @@ import { getWorkflowCheckpointer } from "@/lib/workflow-runtime/checkpointer";
 import { findRetryCheckpointId } from "@/lib/workflow-runtime/retry";
 
 export const runtime = "nodejs";
+// retry 也在 after 中执行，必须给模型调用和检查点落库保留时间。
+export const maxDuration = 300;
 
 /**
  * 节点重试：时间旅行到目标节点执行前，控制面 after() 拉起引擎续跑。

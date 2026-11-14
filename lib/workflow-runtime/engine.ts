@@ -42,9 +42,8 @@ export async function startWorkflowEngine(options: EngineKickoff) {
  */
 export function scheduleWorkflowEngine(options: EngineKickoff) {
   try {
-    after(() => {
-      void startWorkflowEngine(options);
-    });
+    // 必须把引擎 Promise 交给 after；丢弃后回调会立刻结束，生产实例可能在模型请求途中被冻结。
+    after(() => startWorkflowEngine(options));
   } catch {
     void startWorkflowEngine(options);
   }

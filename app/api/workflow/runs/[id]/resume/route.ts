@@ -6,6 +6,8 @@ import { parseResumePayload } from "@/app/(dashboard)/runs/lib/resume-payload";
 import type { ReviewFormField } from "@/lib/workflow-dsl/schema";
 
 export const runtime = "nodejs";
+// resume 也在 after 中执行，必须给模型调用和检查点落库保留时间。
+export const maxDuration = 300;
 
 export async function POST(
   request: Request,

@@ -13,6 +13,8 @@ import {
 } from "@/lib/workflow-dsl/start-variables";
 
 export const runtime = "nodejs";
+// after 与本路由共享执行时限，需覆盖智能体的 120 秒超时及检查点、失败状态落库。
+export const maxDuration = 300;
 
 /**
  * 控制面：校验已发布版本 → 插入 pending → after() 异步拉起引擎。
