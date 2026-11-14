@@ -15,6 +15,9 @@ const HOUSEKEEP_EVERY = 32;
 /**
  * 一次 EVAL：INCR 序号 → 拼帧 → RPUSH → PUBLISH。
  * id 必须在 Redis 里生成后再入 payload，所以不能拆成客户端 pipeline 三次往返。
+ * RPUSH：无论有没有订阅者，都保存事件
+ * PUBLISH：无论有没有订阅者，都发布通知
+ * 没有订阅者：通知自然无人接收，但事件仍保存在 List 中。
  */
 const APPEND_SSE_LUA = `
 local id = redis.call('INCR', KEYS[1])
@@ -46,12 +49,21 @@ export type PendingRunCommand =
   | { kind: "retry"; checkpointId: string };
 
 /**
+ * Redis List 实现的有限长度事件缓冲区
  * 把事件推进 Redis 列表并分配单调 id。
  * 热路径一次 EVAL（INCR+RPUSH+PUBLISH）；LTRIM/EXPIRE 按间隔做，避免每个 token 六趟 RTT。
+ * Redis Lua 脚本执行一组操作。
+ * 例如一次事件写入，可能需要：
+1. 生成递增的事件 ID。
+2. 组装完整事件。
+3. 将事件写入 Redis List。
+4. 发布事件通知。
+如果这些操作分别执行，可能发生并发问题。
+使用 Lua 脚本，可以让这些 Redis 操作作为一个原子执行单元。
  */
 export async function appendSseBuffer(
   runId: string,
-  event: WorkflowSseEvent,
+  event: WorkflowSseEvent
 ): Promise<BufferedSseEvent> {
   const packed = (await redisClient.eval(
     APPEND_SSE_LUA,
@@ -59,7 +71,7 @@ export async function appendSseBuffer(
     seqKey(runId),
     bufKey(runId),
     runEventChannel(runId),
-    JSON.stringify(event),
+    JSON.stringify(event)
   )) as string;
 
   let row: BufferedSseEvent;

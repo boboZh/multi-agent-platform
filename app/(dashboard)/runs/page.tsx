@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import { RunListFilters } from "@/app/(dashboard)/runs/components/run-list-filters";
@@ -67,7 +74,10 @@ function RunsPageInner() {
       if (mode === "refresh") setRefreshing(true);
       else setLoading(true);
       try {
-        const response = await fetch(query, { cache: "no-store", signal: ac.signal });
+        const response = await fetch(query, {
+          cache: "no-store",
+          signal: ac.signal,
+        });
         const payload = (await response.json()) as
           | {
               ok: true;
@@ -100,7 +110,7 @@ function RunsPageInner() {
         }
       }
     },
-    [query, page, status, flowId, router],
+    [query, page, status, flowId, router]
   );
 
   useEffect(() => {
@@ -113,14 +123,17 @@ function RunsPageInner() {
       <header className="mb-5 shrink-0">
         <h1 className="flex items-center gap-2 text-lg font-semibold">
           <Activity className="h-5 w-5" />
-          运行监控
+          试运行
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           按 thread 查看历史运行。最新状态请手动刷新。
         </p>
       </header>
       <div className="flex shrink-0 items-center justify-between gap-3">
-        <RunListFilters status={status as ListStatusFilter | null} flowId={flowId} />
+        <RunListFilters
+          status={status as ListStatusFilter | null}
+          flowId={flowId}
+        />
         <Button
           type="button"
           size="sm"

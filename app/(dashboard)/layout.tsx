@@ -52,15 +52,15 @@ export default function DashboardLayout({
       icon: <GitBranch size={18} />,
     },
     {
-      name: "运行监控",
+      name: "试运行",
       href: "/runs",
       icon: <Activity size={18} />,
     },
-    {
-      name: "flow-demo",
-      href: "/flowDemo",
-      icon: <FlipHorizontal size={18} />,
-    },
+    // {
+    //   name: "flow-demo",
+    //   href: "/flowDemo",
+    //   icon: <FlipHorizontal size={18} />,
+    // },
   ];
 
   return (
