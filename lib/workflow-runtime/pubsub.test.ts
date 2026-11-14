@@ -3,6 +3,7 @@ import {
   parsePublishedSse,
   runEventChannel,
   selectSseAfter,
+  mergeSseReplay,
 } from "@/lib/workflow-runtime/pubsub";
 import type { BufferedSseEvent } from "@/lib/workflow-runtime/sse";
 
@@ -10,6 +11,42 @@ describe("runEventChannel", () => {
   it("按 runId 隔离频道，避免两条运行互相串事件", () => {
     expect(runEventChannel("run-a")).toBe("wf:sse:run-a:pub");
     expect(runEventChannel("run-b")).not.toBe(runEventChannel("run-a"));
+  });
+});
+
+describe("mergeSseReplay", () => {
+  const token = (id: number): BufferedSseEvent => ({
+    id,
+    event: { type: "token", nodeId: "a", content: String(id) },
+  });
+
+  it("快照和暂存区都为空时不产生帧", () => {
+    expect(mergeSseReplay([], [], 0)).toEqual([]);
+  });
+
+  it("快照为空时仍保留读取期间到达的实时帧", () => {
+    expect(mergeSseReplay([], [token(2), token(1)], 0)).toEqual([token(1), token(2)]);
+  });
+
+  it("实时新帧先到也不能跳过较旧的快照帧", () => {
+    expect(mergeSseReplay([token(171), token(172)], [token(174), token(173)], 170))
+      .toEqual([token(171), token(172), token(173), token(174)]);
+  });
+
+  it("快照与实时区重叠时每个 ID 只发送一次并过滤断点之前的帧", () => {
+    expect(mergeSseReplay([token(1), token(2), token(3)], [token(3), token(4)], 2))
+      .toEqual([token(3), token(4)]);
+  });
+
+  it("完成帧在读取快照期间到达时排在全部旧 token 之后", () => {
+    const done: BufferedSseEvent = { id: 4, event: { type: "done" } };
+    expect(mergeSseReplay([token(2)], [done, token(3), token(2)], 1))
+      .toEqual([token(2), token(3), done]);
+  });
+
+  it("合并过程不修改冻结的输入快照或暂存数组", () => {
+    expect(mergeSseReplay(Object.freeze([token(2)]), Object.freeze([token(1)]), 0))
+      .toEqual([token(1), token(2)]);
   });
 });
 

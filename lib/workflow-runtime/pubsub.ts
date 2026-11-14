@@ -61,3 +61,17 @@ export function selectSseAfter(
   out.sort((a, b) => a.id - b.id);
   return out;
 }
+
+/**
+ * 入参：订阅后的缓存快照、读取快照期间暂存的实时帧、已送达游标。
+ * 出参：按 ID 排序且去重的待发送帧。
+ * 两路可能重叠或交错；先合并再推进游标，避免实时新帧让尚未回放的旧帧被跳过。
+ */
+export function mergeSseReplay(
+  snapshot: readonly BufferedSseEvent[],
+  live: readonly BufferedSseEvent[],
+  cursor: number,
+): BufferedSseEvent[] {
+  const sorted = selectSseAfter([...snapshot, ...live], cursor);
+  return sorted.filter((row, index) => index === 0 || sorted[index - 1].id !== row.id);
+}

@@ -11,7 +11,7 @@ import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
 import {
   parsePublishedSse,
   runEventChannel,
-  selectSseAfter,
+  mergeSseReplay,
 } from "@/lib/workflow-runtime/pubsub";
 import { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 import {
@@ -28,7 +28,7 @@ function sleep(ms: number) {
 }
 
 /**
- * SSE 只做 Redis 订阅者：Last-Event-ID 回放缓冲 → SUBSCRIBE 转推。
+ * SSE 只做 Redis 订阅者：先订阅暂存实时帧 → 回放快照并合并 → 实时转推。
  * 绝对不在这里 compile / invoke / streamEvents，否则控制流和执行流重新绑死。
  */
 export async function GET(
@@ -80,44 +80,53 @@ export async function GET(
         }
       };
 
-      const replayBuffer = async () => {
-        const buffered = await readSseBufferAfter(id, cursor);
-        for (const row of selectSseAfter(buffered, cursor)) {
-          send(row);
-        }
-      };
-
       try {
-        await replayBuffer();
+        // 必须先订阅再回放，否则首批正文后会停在 SUBSCRIBE 握手，随后补发成大块。
+        // 回放完成前禁止实时帧推进 cursor，避免新 ID 把旧快照中的帧挤掉。
+        let replaying = true;
+        const pending: BufferedSseEvent[] = [];
+        if (!isTerminalStatus(loaded.run.status)) {
+          subscriber = createRedisSubscriber();
+          subscriber.on("message", (_ch: string, message: string) => {
+            if (closed || canceled) return;
+            const parsed = parsePublishedSse(message);
+            if (!parsed) return;
+            if (replaying) {
+              pending.push(parsed);
+              return;
+            }
+            send(parsed);
+            if (parsed.event.type === "done") closeStream();
+          });
+          await subscriber.subscribe(channel);
+        }
+
+        const buffered = await readSseBufferAfter(id, cursor);
+        for (const row of mergeSseReplay(buffered, pending, cursor)) send(row);
         // 持久化兜底：Redis 缓冲过期时，仅在从头连接（cursor 仍为 0）才回放 Postgres 粗事件。
         if (cursor === 0) {
           const persisted = await listPersistedEvents(id);
-          for (const row of persisted) {
-            send({ id: row.seq, event: row.event });
+          for (const row of mergeSseReplay(
+            persisted.map((row) => ({ id: row.seq, event: row.event })),
+            pending,
+            cursor,
+          )) {
+            send(row);
           }
         }
+        // 最后一次 await 期间也可能积累实时帧；同步清空后切换，没有漏帧窗口。
+        for (const row of mergeSseReplay([], pending, cursor)) send(row);
+        pending.length = 0;
+        replaying = false;
+
         // 避免幽灵连接
-        if (isTerminalStatus(loaded.run.status)) {
+        if (sentDone || isTerminalStatus(loaded.run.status)) {
           if (!sentDone) {
             send({ id: cursor + 1, event: { type: "done" } });
           }
           closeStream();
           return;
         }
-
-        subscriber = createRedisSubscriber();
-        await subscriber.subscribe(channel);
-        subscriber.on("message", (_ch: string, message: string) => {
-          const parsed = parsePublishedSse(message);
-          if (!parsed) return;
-          send(parsed);
-          if (parsed.event.type === "done") {
-            closeStream();
-          }
-        });
-
-        // 订阅后再扫一遍列表，补上 SUBSCRIBE 握手窗口里漏掉的帧。
-        await replayBuffer();
 
         // Vercel Serverless/Edge 默认的 HTTP 请求超时是 60 秒
         const deadline = Date.now() + 55_000;
