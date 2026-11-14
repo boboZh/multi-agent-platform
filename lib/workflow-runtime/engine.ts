@@ -43,10 +43,12 @@ export async function startWorkflowEngine(options: EngineKickoff) {
 export function scheduleWorkflowEngine(options: EngineKickoff) {
   try {
     // 必须把引擎 Promise 交给 after；丢弃后回调会立刻结束，生产实例可能在模型请求途中被冻结。
-    // after(() => startWorkflowEngine(options));
-    after(() => {
-      void startWorkflowEngine(options);
-    });
+    // after() 负责等待，返回的 Promise 告诉它等到什么时候
+    after(() => startWorkflowEngine(options));
+    // void 丢掉了它的 Promise。回调同步返回 undefined，因此对 after() 来说，登记的任务已经完成。它不会自动追踪回调内部所有异步操作。
+    // after(() => {
+    //   void startWorkflowEngine(options);
+    // });
   } catch {
     void startWorkflowEngine(options);
   }
