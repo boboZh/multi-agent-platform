@@ -15,6 +15,7 @@ import {
   type CompiledStateGraph,
 } from "@langchain/langgraph";
 import { createReactAgent, ToolNode } from "@langchain/langgraph/prebuilt";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { createChatModel } from "@/lib/agent-runtime/llm";
 import { buildLangChainTools } from "@/lib/agent-runtime/tools";
 import {
@@ -321,7 +322,8 @@ async function executeAgentNode(
   config: AgentNodeConfig,
   resources: CompileResources,
   createModel: typeof createChatModel,
-  messagesMode: AgentMessagesMode
+  messagesMode: AgentMessagesMode,
+  runnableConfig?: RunnableConfig
 ): Promise<Partial<WorkflowGraphState>> {
   console.log("executeAgentNode", state);
   if (!config.agentId) throw new Error("智能体节点缺少 agentId");
@@ -330,7 +332,7 @@ async function executeAgentNode(
 
   const { agent, tools } = resource;
   const llm = createModel(agent.model_name, Number(agent.temperature ?? 0.7), {
-    streaming: false,
+    streaming: true,
   });
   const mapped = resolveInputMap(state, config.inputMap);
   const mappedJson =
@@ -366,7 +368,8 @@ async function executeAgentNode(
   const result = await withTimeout(
     AGENT_INVOKE_TIMEOUT_MS,
     "智能体调用",
-    (signal) => reactAgent.invoke({ messages: inbound }, { signal }),
+    // 显式传递父图的事件回调和节点 metadata，避免 token 归属依赖隐式异步上下文。
+    (signal) => reactAgent.invoke({ messages: inbound }, { ...runnableConfig, signal }),
   );
   const text = lastAiText(result.messages as BaseMessage[]);
   const vars = { [config.outputKey]: text };
@@ -511,7 +514,8 @@ export async function compileWorkflow(
     addNode: (
       id: string,
       fn: (
-        state: typeof WorkflowGraphAnnotation.State
+        state: typeof WorkflowGraphAnnotation.State,
+        config?: RunnableConfig
       ) => Promise<Partial<WorkflowGraphState>>
     ) => void;
     addEdge: (source: string | string[], target: string) => void;
@@ -530,7 +534,7 @@ export async function compileWorkflow(
     const { data } = node;
     if (data.kind === "start" || data.kind === "end") continue;
 
-    builder.addNode(node.id, async (rawState) => {
+    builder.addNode(node.id, async (rawState, runnableConfig) => {
       const state = asGraphState(rawState);
       const messagesMode: AgentMessagesMode = isolatedNodeIds.has(node.id)
         ? "isolated"
@@ -544,7 +548,8 @@ export async function compileWorkflow(
             data.config,
             resources,
             createModel,
-            messagesMode
+            messagesMode,
+            runnableConfig
           );
         case "human_review":
           return executeHumanReviewNode(state, data.config, node.id);
