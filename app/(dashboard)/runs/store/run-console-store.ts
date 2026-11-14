@@ -8,6 +8,7 @@ import type {
 } from "@/lib/workflow-dsl/tables";
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 import type { NodeStateView } from "@/lib/workflow-runtime/node-state";
+import { mergeRunSnapshot } from "@/app/(dashboard)/runs/lib/merge-run-snapshot";
 import {
   appendTimelineEvent,
   shouldSkipSseEvent,
@@ -33,6 +34,11 @@ type RunConsoleState = {
     lastEventId?: number;
   }) => void;
   applyEvent: (event: WorkflowSseEvent, eventId?: number) => void;
+  hydrateMetadata: (payload: {
+    run: FlowRunRow;
+    dsl: WorkflowDocument;
+    flowName: string;
+  }) => void;
   setConnection: (connection: RunConnection) => void;
   selectNode: (nodeId: string | null) => void;
   putNodeState: (nodeId: string, state: NodeStateView | null) => void;
@@ -64,6 +70,12 @@ export const useRunConsoleStore = create<RunConsoleState>((set) => ({
       nodeStateCache: {},
       lastEventId: lastEventId ?? 0, //
     }),
+  // 详情和 SSE 并行加载：详情只补元数据，时间线与断点由 SSE 独占，避免慢响应擦掉正文。
+  hydrateMetadata: ({ run, dsl, flowName }) =>
+    set((state) => {
+      const merged = mergeRunSnapshot(run, state.events);
+      return { run: merged, dsl, flowName, interrupt: merged.interrupt_payload };
+    }),
   applyEvent: (event, eventId) =>
     set((state) => {
       if (shouldSkipSseEvent(state.lastEventId, eventId)) {
@@ -80,10 +92,7 @@ export const useRunConsoleStore = create<RunConsoleState>((set) => ({
         next.interrupt = event.payload;
       }
       if (event.type === "run_status" && state.run) {
-        next.run = {
-          ...state.run,
-          status: event.status,
-        };
+        next.run = mergeRunSnapshot(state.run, [event]);
         if (event.status !== "interrupted") {
           next.interrupt = event.status === "running" ? null : state.interrupt;
         }

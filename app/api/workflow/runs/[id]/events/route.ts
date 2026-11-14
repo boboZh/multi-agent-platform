@@ -5,9 +5,8 @@ import {
   mockUserId,
   sseHeaders,
 } from "@/lib/workflow-runtime/http";
-import { loadRunWithDsl } from "@/lib/workflow-runtime/load-run";
 import { readSseBufferAfter } from "@/lib/workflow-runtime/buffer";
-import { listPersistedEvents } from "@/lib/workflow-runtime/persist";
+import { listPersistedEvents, loadFlowRun } from "@/lib/workflow-runtime/persist";
 import {
   parsePublishedSse,
   runEventChannel,
@@ -37,16 +36,19 @@ export async function GET(
 ) {
   const { id } = await context.params;
   const userId = mockUserId();
-  let loaded;
+  const lookupStartedAt = performance.now();
+  let run;
   try {
-    loaded = await loadRunWithDsl(id, userId);
+    // SSE 只需要校验所属用户和运行状态，不加载 DSL、版本和名称，减少首字前的跨区查询。
+    run = await loadFlowRun(id, userId);
   } catch (err) {
     const message = err instanceof Error ? err.message : "读取运行失败";
     return jsonError([issue(message)], 500);
   }
-  if (!loaded) {
+  if (!run) {
     return jsonError([issue("运行不存在", ["id"])], 404);
   }
+  const runStatus = run.status;
 
   // 原生的 EventSource 浏览器 API 断线重连时会带上 Last-Event-ID 请求头；但如果是前端用 fetch 手动接管流，通常会拼在 URL 参数 ?after= 里。这里取两者的最大值，确保绝对拿到最新的游标（Cursor）。
   const lastEventId = Math.max(
@@ -54,10 +56,13 @@ export async function GET(
     parseLastEventId(new URL(request.url).searchParams.get("after"))
   );
   const encoder = new TextEncoder();
+  const lookupMs = performance.now() - lookupStartedAt;
   const channel = runEventChannel(id);
   let canceled = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // 鉴权完成即发注释帧，让响应头先抵达浏览器，不等 Redis 握手和回放才开始响应。
+      controller.enqueue(encoder.encode(": connected\n\n"));
       let cursor = lastEventId;
       let closed = false;
       let sentDone = false;
@@ -85,7 +90,7 @@ export async function GET(
         // 回放完成前禁止实时帧推进 cursor，避免新 ID 把旧快照中的帧挤掉。
         let replaying = true;
         const pending: BufferedSseEvent[] = [];
-        if (!isTerminalStatus(loaded.run.status)) {
+        if (!isTerminalStatus(runStatus)) {
           subscriber = createRedisSubscriber();
           subscriber.on("message", (_ch: string, message: string) => {
             if (closed || canceled) return;
@@ -120,7 +125,7 @@ export async function GET(
         replaying = false;
 
         // 避免幽灵连接
-        if (sentDone || isTerminalStatus(loaded.run.status)) {
+        if (sentDone || isTerminalStatus(runStatus)) {
           if (!sentDone) {
             send({ id: cursor + 1, event: { type: "done" } });
           }
@@ -160,5 +165,7 @@ export async function GET(
     },
   });
 
-  return new Response(stream, { headers: sseHeaders() });
+  return new Response(stream, {
+    headers: { ...sseHeaders(), "Server-Timing": `run_lookup;dur=${lookupMs.toFixed(1)}` },
+  });
 }

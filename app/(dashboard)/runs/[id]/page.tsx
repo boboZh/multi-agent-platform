@@ -35,10 +35,6 @@ type Snapshot = {
   events: WorkflowSseEvent[];
 };
 
-function liveStatuses(status: string | undefined) {
-  return status === "pending" || status === "running";
-}
-
 export default function RunConsolePage({
   params,
 }: {
@@ -46,6 +42,7 @@ export default function RunConsolePage({
 }) {
   const { id } = use(params);
   const hydrate = useRunConsoleStore((s) => s.hydrate);
+  const hydrateMetadata = useRunConsoleStore((s) => s.hydrateMetadata);
   const applyEvent = useRunConsoleStore((s) => s.applyEvent);
   const reset = useRunConsoleStore((s) => s.reset);
   const setConnection = useRunConsoleStore((s) => s.setConnection);
@@ -82,7 +79,7 @@ export default function RunConsolePage({
           setError(payload.errors?.[0]?.message ?? "加载失败");
           return;
         }
-        hydrate(payload);
+        hydrateMetadata(payload);
         setError(null);
       } catch {
         if (!cancelled) setError("加载运行失败");
@@ -95,12 +92,13 @@ export default function RunConsolePage({
       cancelled = true;
       reset();
     };
-  }, [id, hydrate, reset]);
+  }, [id, hydrateMetadata, reset]);
 
   const status = run?.status;
 
   useEffect(() => {
-    if (!run || !liveStatuses(status)) return;
+    // 不等详情接口：生产跨区查询期间模型已在生成，晚订阅只能收到整块历史回放。
+    // 已完成的运行也从 SSE 回放正文；详情接口只有粗事件，不能拿它的 seq 跳过 token。
     let stopped = false;
     let source: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -117,14 +115,18 @@ export default function RunConsolePage({
       source = es;
       setConnection("streaming");
       es.onmessage = (message) => {
+        if (stopped) return;
         // attempt = 0;
         try {
           const parsed: unknown = JSON.parse(message.data);
-          console.log("es.onmessage", parsed);
           if (!isWorkflowSseEvent(parsed)) return;
           const eventId = Number.parseInt(message.lastEventId, 10);
           applyEvent(parsed, Number.isFinite(eventId) ? eventId : undefined);
-          if (parsed.type === "done") {
+          if (
+            parsed.type === "done" ||
+            (parsed.type === "run_status" &&
+              (parsed.status === "interrupted" || parsed.status === "cancelled"))
+          ) {
             stopped = true;
             es.close();
             setConnection("idle");
@@ -133,8 +135,7 @@ export default function RunConsolePage({
           // 单帧坏 JSON 忽略
         }
       };
-      es.onerror = (error) => {
-        console.log("es.onerror", error);
+      es.onerror = () => {
         if (stopped) return;
         // CONNECTING：浏览器正在自带重连，不要 close 再 new，否则 /events 编译请求会叠成进程风暴。
         if (es.readyState === EventSource.CONNECTING) {
@@ -157,7 +158,7 @@ export default function RunConsolePage({
       source?.close();
       setConnection("idle");
     };
-  }, [id, run?.id, status, sseNonce, applyEvent, setConnection]);
+  }, [id, sseNonce, applyEvent, setConnection]);
 
   const reduced = useMemo(() => reduceRunEvents(events), [events]);
   const highlight = useMemo(
