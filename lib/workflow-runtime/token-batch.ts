@@ -1,7 +1,7 @@
 import type { WorkflowSseEvent } from "@/lib/workflow-runtime/sse";
 
 type TokenEvent = Extract<WorkflowSseEvent, { type: "token" }>;
-const BATCH_SIZE = 128;
+const BATCH_SIZE = 32;
 const FLUSH_INTERVAL_MS = 10;
 export const MAX_PENDING_TOKENS = 4096;
 
