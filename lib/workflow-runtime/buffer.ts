@@ -1,6 +1,5 @@
 import { redisClient } from "@/lib/redis";
 import { runEventChannel } from "@/lib/workflow-runtime/pubsub";
-import { shouldHousekeepSseBuffer } from "@/lib/workflow-runtime/sse-housekeep";
 import {
   PERSISTED_SSE_TYPES,
   type BufferedSseEvent,
@@ -9,22 +8,20 @@ import {
 
 const BUF_TTL_SECONDS = 86_400;
 const BUF_MAX = 4000;
-/** token 热路径上隔这么多帧才 LTRIM/EXPIRE，与 Lua 追加拆开省 RTT。 */
-const HOUSEKEEP_EVERY = 32;
-
-/**
- * 一次 EVAL：INCR 序号 → 拼帧 → RPUSH → PUBLISH。
- * id 必须在 Redis 里生成后再入 payload，所以不能拆成客户端 pipeline 三次往返。
- * RPUSH：无论有没有订阅者，都保存事件
- * PUBLISH：无论有没有订阅者，都发布通知
- * 没有订阅者：通知自然无人接收，但事件仍保存在 List 中。
- */
+/** 每批原子分配 ID 并逐帧发布，裁剪和 TTL 也放在同一次往返里。 */
 const APPEND_SSE_LUA = `
-local id = redis.call('INCR', KEYS[1])
-local packed = '{"id":' .. id .. ',"event":' .. ARGV[1] .. '}'
-redis.call('RPUSH', KEYS[2], packed)
-redis.call('PUBLISH', KEYS[3], packed)
-return packed
+local rows = {}
+for i, event in ipairs(ARGV) do
+  local id = redis.call('INCR', KEYS[1])
+  local packed = '{"id":' .. id .. ',"event":' .. event .. '}'
+  redis.call('RPUSH', KEYS[2], packed)
+  redis.call('PUBLISH', KEYS[3], packed)
+  rows[i] = packed
+end
+redis.call('LTRIM', KEYS[2], -${BUF_MAX}, -1)
+redis.call('EXPIRE', KEYS[2], ${BUF_TTL_SECONDS})
+redis.call('EXPIRE', KEYS[1], ${BUF_TTL_SECONDS})
+return rows
 `;
 
 function bufKey(runId: string) {
@@ -48,63 +45,43 @@ export type PendingRunCommand =
   | { kind: "resume"; resume: Record<string, unknown> }
   | { kind: "retry"; checkpointId: string };
 
-/**
- * Redis List 实现的有限长度事件缓冲区
- * 把事件推进 Redis 列表并分配单调 id。
- * 热路径一次 EVAL（INCR+RPUSH+PUBLISH）；LTRIM/EXPIRE 按间隔做，避免每个 token 六趟 RTT。
- * Redis Lua 脚本执行一组操作。
- * 例如一次事件写入，可能需要：
-1. 生成递增的事件 ID。
-2. 组装完整事件。
-3. 将事件写入 Redis List。
-4. 发布事件通知。
-如果这些操作分别执行，可能发生并发问题。
-使用 Lua 脚本，可以让这些 Redis 操作作为一个原子执行单元。
- */
+/** 单帧控制事件复用批量入口，保证与 token 使用同一套单调序号。 */
 export async function appendSseBuffer(
   runId: string,
   event: WorkflowSseEvent
 ): Promise<BufferedSseEvent> {
-  const packed = (await redisClient.eval(
+  const [row] = await appendSseBufferBatch(runId, [event]);
+  return row;
+}
+
+/**
+ * 入参：runId 和有序事件批次。出参：Redis 分配 ID 后的独立帧。
+ * 一次 Lua 完成整批入缓冲、逐帧发布和续期；空批次不访问 Redis。
+ * 保留原始 SSE 协议，让重连回放和并行节点归属无需跟随传输批次改变。
+ */
+export async function appendSseBufferBatch(
+  runId: string,
+  events: readonly WorkflowSseEvent[]
+): Promise<BufferedSseEvent[]> {
+  if (events.length === 0) return [];
+  const packed = await redisClient.eval(
     APPEND_SSE_LUA,
     3,
     seqKey(runId),
     bufKey(runId),
     runEventChannel(runId),
-    JSON.stringify(event)
-  )) as string;
-
-  let row: BufferedSseEvent;
-  try {
-    row = JSON.parse(packed) as BufferedSseEvent;
-  } catch {
-    throw new Error("Redis SSE Lua 返回了无法解析的帧");
-  }
-  if (typeof row.id !== "number" || !row.event) {
-    throw new Error("Redis SSE Lua 返回的帧缺少 id");
-  }
-
-  if (shouldHousekeepSseBuffer(row.id, event.type, HOUSEKEEP_EVERY)) {
-    await redisClient
-      .pipeline()
-      .ltrim(bufKey(runId), -BUF_MAX, -1)
-      .expire(bufKey(runId), BUF_TTL_SECONDS)
-      .expire(seqKey(runId), BUF_TTL_SECONDS)
-      .exec();
-  }
-
-  return row;
+    ...events.map((event) => JSON.stringify(event))
+  ) as string[];
+  return packed.map((item) => {
+    const row = JSON.parse(item) as BufferedSseEvent;
+    if (!Number.isSafeInteger(row.id) || row.id < 1 || !row.event) {
+      throw new Error("Redis SSE Lua 返回的帧缺少合法 id");
+    }
+    return row;
+  });
 }
 
-/**
- * 在常规的后端开发中，全量拉取（类似于 SQL 里的 SELECT * 无 Limit）是大忌，极易引发内存溢出。
-但这行代码极其安全，因为appendSseBuffer代码里的 ltrim 是它的天然护城河。ltrim 已经强行把这个列表的长度锁死在了 BUF_MAX（比如 500 条）。所以这里的 lrange 哪怕拉到底，撑死也就几百个轻量级的字符串，瞬间就能读完，绝对不会拖垮 Redis。
-
-一推一拉（rpush + lrange），一裁一放（ltrim + expire），这四条 Redis 命令的组合，把 SSE 流式重连的容错做到了极致
- * @param runId 
- * @param lastId 
- * @returns 
- */
+/** 回放缓冲内晚于游标的帧；Lua 每批裁剪列表，将读取范围限制在最近 4000 帧。 */
 export async function readSseBufferAfter(
   runId: string,
   lastId: number

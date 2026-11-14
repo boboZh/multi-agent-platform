@@ -14,6 +14,7 @@ import { mapStreamEvent } from "@/lib/agent-runtime/sse";
 import { getWorkflowCheckpointer } from "@/lib/workflow-runtime/checkpointer";
 import {
   appendSseBuffer,
+  appendSseBufferBatch,
   shouldPersistEvent,
   type PendingRunCommand,
 } from "@/lib/workflow-runtime/buffer";
@@ -36,6 +37,11 @@ import {
   flushLangSmithTraces,
   workflowLangSmithConfig,
 } from "@/lib/langsmith/tracing";
+
+import {
+  createTokenBatcher,
+  MAX_PENDING_TOKENS,
+} from "@/lib/workflow-runtime/token-batch";
 
 export { isTerminalStatus } from "@/lib/workflow-runtime/run-status";
 
@@ -139,8 +145,14 @@ export async function executeWorkflowRun(options: {
 }): Promise<FlowRunRow> {
   const { run, dsl, command, userId, onEvent } = options;
   const nodeIds = new Set(dsl.nodes.map((node) => node.id));
-  const emit = (event: WorkflowSseEvent) =>
-    emitAndPersist(run.id, event, onEvent);
+  const tokens = createTokenBatcher(async (events) => {
+    await appendSseBufferBatch(run.id, events);
+    for (const event of events) await onEvent?.(event);
+  });
+  const emit = async (event: WorkflowSseEvent) => {
+    await tokens.flush();
+    return emitAndPersist(run.id, event, onEvent);
+  };
 
   const currentNodeIds = new Set<string>();
   let lastFailedNodeId: string | undefined;
@@ -206,11 +218,13 @@ export async function executeWorkflowRun(options: {
 
       const mapped = mapStreamEvent(raw);
       if (mapped?.type === "token") {
-        await emit({
+        tokens.push({
           type: "token",
           nodeId: eventNodeId,
           content: mapped.content,
         });
+        // 仅在 Redis 持续落后时施加背压，正常消费不再逐 token 等待网络 RTT。
+        if (tokens.pendingCount >= MAX_PENDING_TOKENS) await tokens.flush();
       } else if (mapped?.type === "tool_start") {
         await emit({
           type: "tool_start",
@@ -266,6 +280,9 @@ export async function executeWorkflowRun(options: {
     await emit({ type: "done" });
     return next;
   } catch (err) {
+    // 图异常也必须等待已启动的批次，避免 error/done 之后又冒出旧 token。
+    await tokens.flush().catch(() => undefined);
+    tokens.discard();
     if (isGraphInterrupt(err)) {
       const payload = interruptPayloadFromError(err);
       if (payload) {
